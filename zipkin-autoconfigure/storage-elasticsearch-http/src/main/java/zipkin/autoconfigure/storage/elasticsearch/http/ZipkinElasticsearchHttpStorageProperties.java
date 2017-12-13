@@ -14,18 +14,25 @@
 package zipkin.autoconfigure.storage.elasticsearch.http;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Logger;
+import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
+import okhttp3.logging.HttpLoggingInterceptor;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import zipkin.storage.elasticsearch.http.ElasticsearchHttpStorage;
 
 @ConfigurationProperties("zipkin.storage.elasticsearch")
 public class ZipkinElasticsearchHttpStorageProperties implements Serializable { // for Spark jobs
+  static final Logger log =
+      Logger.getLogger(ZipkinElasticsearchHttpStorageProperties.class.getName());
+
   private static final long serialVersionUID = 0L;
 
   /** Indicates the ingest pipeline used before spans are indexed. no default */
   private String pipeline;
-  /** A List of transport-specific hosts to connect to, e.g. "localhost:9300" */
+  /** A List of base urls to connect to. Defaults to http://localhost:9300 */
   private List<String> hosts; // initialize to null to defer default to transport
   /** The index prefix to use when generating daily index names. Defaults to zipkin. */
   private String index = "zipkin";
@@ -37,6 +44,19 @@ public class ZipkinElasticsearchHttpStorageProperties implements Serializable { 
   private int indexShards = 5;
   /** Number of replicas (redundancy factor) per index. Defaults to 1.` */
   private int indexReplicas = 1;
+  /** username used for basic auth. Needed when Shield or X-Pack security is enabled */
+  private String username;
+  /** password used for basic auth. Needed when Shield or X-Pack security is enabled */
+  private String password;
+  /** When set, controls the volume of HTTP logging of the Elasticsearch Api. Options are BASIC, HEADERS, BODY */
+  private HttpLoggingInterceptor.Level httpLogging;
+  /** When true, Redundantly queries indexes made with pre v1.31 collectors. Defaults to true. */
+  private boolean legacyReadsEnabled = true;
+  /**
+   * Controls the connect, read and write socket timeouts (in milliseconds) for Elasticsearch Api
+   * requests. Defaults to 10000 (10 seconds)
+   */
+  private int timeout = 10_000;
 
   public String getPipeline() {
     return pipeline;
@@ -54,7 +74,23 @@ public class ZipkinElasticsearchHttpStorageProperties implements Serializable { 
 
   public void setHosts(List<String> hosts) {
     if (hosts != null && !hosts.isEmpty()) {
-      this.hosts = hosts;
+      List<String> converted = new ArrayList<>();
+      for (String host : hosts) {
+        if (host.startsWith("http://") || host.startsWith("https://")) {
+          converted.add(host);
+          continue;
+        }
+        int port = HttpUrl.parse("http://" + host).port();
+        if (port == 80) {
+          host += ":9200";
+        } else if (port == 9300) {
+          log.warning(
+              "Native transport no longer supported. Changing " + host + " to http port 9200");
+          host = host.replace(":9300", ":9200");
+        }
+        converted.add("http://" + host);
+      }
+      this.hosts = converted;
     }
   }
 
@@ -98,6 +134,46 @@ public class ZipkinElasticsearchHttpStorageProperties implements Serializable { 
     this.indexReplicas = indexReplicas;
   }
 
+  public String getUsername() {
+    return username;
+  }
+
+  public void setUsername(String username) {
+    this.username = username;
+  }
+
+  public String getPassword() {
+    return password;
+  }
+
+  public void setPassword(String password) {
+    this.password = password;
+  }
+
+  public HttpLoggingInterceptor.Level getHttpLogging() {
+    return httpLogging;
+  }
+
+  public void setHttpLogging(HttpLoggingInterceptor.Level httpLogging) {
+    this.httpLogging = httpLogging;
+  }
+
+  public boolean isLegacyReadsEnabled() {
+    return legacyReadsEnabled;
+  }
+
+  public void setLegacyReadsEnabled(boolean legacyReadsEnabled) {
+    this.legacyReadsEnabled = legacyReadsEnabled;
+  }
+
+  public int getTimeout() {
+    return timeout;
+  }
+
+  public void setTimeout(int timeout) {
+    this.timeout = timeout;
+  }
+
   public ElasticsearchHttpStorage.Builder toBuilder(OkHttpClient client) {
     ElasticsearchHttpStorage.Builder builder = ElasticsearchHttpStorage.builder(client);
     if (hosts != null) builder.hosts(hosts);
@@ -107,6 +183,7 @@ public class ZipkinElasticsearchHttpStorageProperties implements Serializable { 
         .pipeline(pipeline)
         .maxRequests(maxRequests)
         .indexShards(indexShards)
-        .indexReplicas(indexReplicas);
+        .indexReplicas(indexReplicas)
+        .legacyReadsEnabled(legacyReadsEnabled);
   }
 }

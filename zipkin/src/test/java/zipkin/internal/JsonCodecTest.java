@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -178,55 +178,18 @@ public final class JsonCodecTest extends CodecTest {
   }
 
   @Test
-  public void doesntStackOverflowOnToBufferWriterBug_lessThanBytes() {
-    thrown.expect(AssertionError.class);
-    thrown.expectMessage("Bug found using FooWriter to write Foo as json. Wrote 1/2 bytes: a");
+  public void niceErrorOnUppercaseTraceId() {
+    thrown.expect(IllegalArgumentException.class);
+    thrown.expectMessage(
+      "48485A3953BB6124 should be a 1 to 32 character lower-hex string with no prefix");
 
-    class FooWriter implements Buffer.Writer {
-      @Override public int sizeInBytes(Object value) {
-        return 2;
-      }
+    String json = "{\n"
+      + "  \"traceId\": \"48485A3953BB6124\",\n"
+      + "  \"name\": \"get-traces\",\n"
+      + "  \"id\": \"6b221d5bc9e6496c\"\n"
+      + "}";
 
-      @Override public void write(Object value, Buffer buffer) {
-        buffer.writeByte('a');
-        throw new RuntimeException("buggy");
-      }
-    }
-
-    class Foo {
-      @Override
-      public String toString() {
-        return new String(JsonCodec.write(new FooWriter(), this), UTF_8);
-      }
-    }
-
-    new Foo().toString();
-  }
-
-  @Test
-  public void doesntStackOverflowOnToBufferWriterBug_Overflow() {
-    thrown.expect(AssertionError.class);
-    thrown.expectMessage("Bug found using FooWriter to write Foo as json. Wrote 2/2 bytes: ab");
-
-    // pretend there was a bug calculating size, ex it calculated incorrectly as to small
-    class FooWriter implements Buffer.Writer {
-      @Override public int sizeInBytes(Object value) {
-        return 2;
-      }
-
-      @Override public void write(Object value, Buffer buffer) {
-        buffer.writeByte('a').writeByte('b').writeByte('c'); // wrote larger than size!
-      }
-    }
-
-    class Foo {
-      @Override
-      public String toString() {
-        return new String(JsonCodec.write(new FooWriter(), this), UTF_8);
-      }
-    }
-
-    new Foo().toString();
+    Codec.JSON.readSpan(json.getBytes(UTF_8));
   }
 
   @Test
@@ -411,13 +374,13 @@ public final class JsonCodecTest extends CodecTest {
   @Test
   public void sizeInBytes_span() throws IOException {
     Span span = TestObjects.LOTS_OF_SPANS[0];
-    assertThat(JsonCodec.SPAN_ADAPTER.sizeInBytes(span))
+    assertThat(JsonCodec.SPAN_WRITER.sizeInBytes(span))
         .isEqualTo(codec().writeSpan(span).length);
   }
 
   @Test
   public void sizeInBytes_link() throws IOException {
-    assertThat(JsonCodec.DEPENDENCY_LINK_ADAPTER.sizeInBytes(TestObjects.LINKS.get(0)))
+    assertThat(JsonCodec.DEPENDENCY_LINK_WRITER.sizeInBytes(TestObjects.LINKS.get(0)))
         .isEqualTo(codec().writeDependencyLink(TestObjects.LINKS.get(0)).length);
   }
 

@@ -9,9 +9,9 @@ and the server listens on port 9411.
 
 The quickest way to get started is to fetch the [latest released server](https://search.maven.org/remote_content?g=io.zipkin.java&a=zipkin-server&v=LATEST&c=exec) as a self-contained executable jar. Note that the Zipkin server requires minimum JRE 8. For example:
 
-```
-wget -O zipkin.jar 'https://search.maven.org/remote_content?g=io.zipkin.java&a=zipkin-server&v=LATEST&c=exec'
-java -jar zipkin.jar
+```bash
+$ curl -sSL https://zipkin.io/quickstart.sh | bash -s
+$ java -jar zipkin.jar
 ```
 
 Once you've started, browse to http://your_host:9411 to find traces!
@@ -47,7 +47,7 @@ By default, zipkin writes log messages to the console at INFO level and above. Y
 For example, if you want to enable debug logging for all zipkin categories, you can start the server like so:
 
 ```bash
-$ java -jar zipkin.jar --logging.level.zipkin=DEBUG
+$ java -jar zipkin.jar --logging.level.zipkin=DEBUG --logging.level.zipkin2=DEBUG
 ```
 
 Under the covers, the server uses [Spring Boot - Logback integration](http://docs.spring.io/spring-boot/docs/current/reference/html/howto-logging.html#howto-configure-logback-for-logging). For example, you can add `--logging.exception-conversion-word=%wEx{full}` to dump full stack traces instead of truncated ones.
@@ -101,6 +101,8 @@ defaultLookback | zipkin.ui.default-lookback | Default duration in millis to loo
 queryLimit | zipkin.ui.query-limit | Default limit for Find Traces. Defaults to 10.
 instrumented | zipkin.ui.instrumented | Which sites this Zipkin UI covers. Regex syntax. e.g. `http:\/\/example.com\/.*` Defaults to match all websites (`.*`).
 logsUrl | zipkin.ui.logs-url | Logs query service url pattern. If specified, a button will appear on the trace page and will replace {traceId} in the url by the traceId. Not required.
+dependency.lowErrorRate | zipkin.ui.dependency.low-error-rate | The rate of error calls on a dependency link that turns it yellow. Defaults to 0.5 (50%) set to >1 to disable.
+dependency.highErrorRate | zipkin.ui.dependency.high-error-rate | The rate of error calls on a dependency link that turns it red. Defaults to 0.75 (75%) set to >1 to disable.
 
 For example, if using docker you can set `ZIPKIN_UI_QUERY_LIMIT=100` to affect `$.queryLimit` in `/config.json`.
 
@@ -110,18 +112,20 @@ zipkin-server is a drop-in replacement for the [scala query service](https://git
 [yaml configuration](src/main/resources/zipkin-server-shared.yml) binds the following environment variables from zipkin-scala:
 
     * `QUERY_PORT`: Listen port for the http api and web ui; Defaults to 9411
+    * `QUERY_ENABLED`: `false` disables the query api and UI assets; Defaults to true
     * `QUERY_LOG_LEVEL`: Log level written to the console; Defaults to INFO
-    * `QUERY_LOOKBACK`: How many milliseconds queries can look back from endTs; Defaults to 7 days
+    * `QUERY_LOOKBACK`: How many milliseconds queries can look back from endTs; Defaults to 24 hours (two daily buckets: one for today and one for yesterday)
     * `STORAGE_TYPE`: SpanStore implementation: one of `mem`, `mysql`, `cassandra`, `elasticsearch`
-    * `COLLECTOR_PORT`: Listen port for the scribe thrift api; Defaults to 9410
     * `COLLECTOR_SAMPLE_RATE`: Percentage of traces to retain, defaults to always sample (1.0).
 
 ### Cassandra Storage
-Zipkin's [Cassandra storage component](../zipkin-storage/cassandra)
+Zipkin's [Cassandra v3 storage component](../zipkin-storage/zipkin2_cassandra)
+supports version 3.9+ and applies when `STORAGE_TYPE` is set to `cassandra2`:
+Zipkin's [Cassandra legacy storage component](../zipkin-storage/cassandra)
 supports version 2.2+ and applies when `STORAGE_TYPE` is set to `cassandra`:
 
-    * `CASSANDRA_KEYSPACE`: The keyspace to use. Defaults to "zipkin".
-    * `CASSANDRA_CONTACT_POINTS`: Comma separated list of hosts / ip addresses part of Cassandra cluster. Defaults to localhost
+    * `CASSANDRA_KEYSPACE`: The keyspace to use. Defaults to "zipkin2" when storage type is "cassandra3" or "zipkin" if legacy.
+    * `CASSANDRA_CONTACT_POINTS`: Comma separated list of host addresses part of Cassandra cluster. You can also specify a custom port with 'host:port'. Defaults to localhost on port 9042.
     * `CASSANDRA_LOCAL_DC`: Name of the datacenter that will be considered "local" for latency load balancing. When unset, load-balancing is round-robin.
     * `CASSANDRA_ENSURE_SCHEMA`: Ensuring cassandra has the latest schema. If enabled tries to execute scripts in the classpath prefixed with `cassandra-schema-cql3`. Defaults to true
     * `CASSANDRA_USERNAME` and `CASSANDRA_PASSWORD`: Cassandra authentication. Will throw an exception on startup if authentication fails. No default
@@ -137,8 +141,9 @@ The following are tuning parameters which may not concern all users:
 Example usage:
 
 ```bash
-$ STORAGE_TYPE=cassandra java -jar zipkin.jar --logging.level.com.datastax.driver.core.QueryLogger=trace
+$ STORAGE_TYPE=cassandra3 java -jar zipkin.jar --logging.level.com.datastax.driver.core.QueryLogger=trace
 ```
+
 ### MySQL Storage
 The following apply when `STORAGE_TYPE` is set to `mysql`:
 
@@ -156,21 +161,13 @@ $ STORAGE_TYPE=mysql MYSQL_USER=root java -jar zipkin.jar
 ```
 
 ### Elasticsearch Storage
-Zipkin's [Elasticsearch storage component](../zipkin-storage/elasticsearch)
-supports version 2.x and applies when `STORAGE_TYPE` is set to `elasticsearch`
-
-When the value of `ES_HOSTS` includes an Http URL (ex http://elasticsearch:9200),
 Zipkin's [Elasticsearch Http storage component](../zipkin-storage/elasticsearch-http)
-is used, which supports versions 2.x and 5.x.
+supports versions 2.x and 5.x and applies when `STORAGE_TYPE` is set to `elasticsearch`
 
 The following apply when `STORAGE_TYPE` is set to `elasticsearch`:
 
-    * `ES_CLUSTER`: The name of the elasticsearch cluster to connect to. Defaults to "elasticsearch".
-    * `ES_HOSTS`: A comma separated list of elasticsearch hostnodes to connect to. When in host:port
-                  format, they should use the transport port, not the http port. To use http, specify
-                  base urls, ex. http://host:9200. Defaults to "localhost:9300". When not using http,
-                  Only one of the hosts needs to be available to fetch the remaining nodes in the
-                  cluster. It is recommended to set this to all the master nodes of the cluster.
+    * `ES_HOSTS`: A comma separated list of elasticsearch base urls to connect to ex. http://host:9200.
+                  Defaults to "http://localhost:9200".
 
                   If the http URL is an AWS-hosted elasticsearch installation (e.g.
                   https://search-domain-xyzzy.us-west-2.es.amazonaws.com) then Zipkin will attempt to
@@ -178,6 +175,8 @@ The following apply when `STORAGE_TYPE` is set to `elasticsearch`:
                   files, or ec2 profiles) to sign outbound requests to the cluster.
     * `ES_PIPELINE`: Only valid when the destination is Elasticsearch 5.x. Indicates the ingest
                      pipeline used before spans are indexed. No default.
+    * `ES_TIMEOUT`: Controls the connect, read and write socket timeouts (in milliseconds) for
+                    Elasticsearch Api. Defaults to 10000 (10 seconds)
     * `ES_MAX_REQUESTS`: Only valid when the transport is http. Sets maximum in-flight requests from
                          this process to any Elasticsearch host. Defaults to 64.
     * `ES_AWS_DOMAIN`: The name of the AWS-hosted elasticsearch domain to use. Supercedes any set
@@ -198,16 +197,22 @@ The following apply when `STORAGE_TYPE` is set to `elasticsearch`:
                            performance, but not write performance. Number of replicas can be changed
                            for existing indices. Defaults to 1. It is highly discouraged to set this
                            to 0 as it would mean a machine failure results in data loss.
+    * `ES_USERNAME` and `ES_PASSWORD`: Elasticsearch basic authentication, which defaults to empty string.
+                                       Use when X-Pack security (formerly Shield) is in place.
+    * `ES_HTTP_LOGGING`: When set, controls the volume of HTTP logging of the Elasticsearch Api.
+                         Options are BASIC, HEADERS, BODY
+    * `ES_LEGACY_READS_ENABLED`: When true, Redundantly queries indexes made with pre v1.31 collectors.
+                                 Defaults to true.
 Example usage:
 
-To connect with http:
+To connect normally:
 ```bash
-$ STORAGE_TYPE=elasticsearch ES_HOSTS=http://localhost:9200 java -jar zipkin.jar
+$ STORAGE_TYPE=elasticsearch ES_HOSTS=http://myhost:9200 java -jar zipkin.jar
 ```
 
-Or to use transport client.
+To log Elasticsearch api requests:
 ```bash
-$ STORAGE_TYPE=elasticsearch ES_CLUSTER=monitoring ES_HOSTS=host1:9300,host2:9300 java -jar zipkin.jar
+$ STORAGE_TYPE=elasticsearch ES_HTTP_LOGGING=BASIC java -jar zipkin.jar
 ```
 
 Or to use the Amazon Elasticsearch Service.
@@ -228,18 +233,29 @@ to prevent excessive load, service and span name queries are limited by
 `QUERY_LOOKBACK`, which defaults to 24hrs (two daily buckets: one for
 today and one for yesterday)
 
-### Scribe Collector
-The Scribe collector is enabled by default, configured by the following:
+### HTTP Collector
+The HTTP collector is enabled by default. It accepts spans via `POST /api/v1/spans`. The HTTP
+collector supports the following configuration:
 
-    * `SCRIBE_ENABLED`: Set to false to prevent scribe from starting; Defaults to true
+Property | Environment Variable | Description
+--- | --- | ---
+`zipkin.collector.http.enabled` | `HTTP_COLLECTOR_ENABLED` | `false` disables the HTTP collector. Defaults to `true`.
+
+### Scribe Collector
+The Scribe collector is disabled by default, configured by the following:
+
+    * `SCRIBE_ENABLED`: Set to true to listen for scribe (thrift RPC); Defaults to false
     * `COLLECTOR_PORT`: Listen port for the scribe thrift api; Defaults to 9410
 
 ### Kafka Collector
 This collector remains a Kafka 0.8.x consumer, while Zipkin systems update to 0.9+.
 
+A collector supporting Kafka versions 0.10 and later is available as an external module. See
+[zipkin-autoconfigure/collector-kafka10](../zipkin-autoconfigure/collector-kafka10/).
+
 The following apply when `KAFKA_ZOOKEEPER` is set:
 
-    * `KAFKA_TOPIC`: Topic zipkin spans will be consumed from. Defaults to "zipkin"
+    * `KAFKA_TOPIC`: Topic zipkin spans will be consumed from. Defaults to "zipkin". When Kafka 0.10 is in use, multiple topics may be specified if comma delimited.
     * `KAFKA_STREAMS`: Count of threads/streams consuming the topic. Defaults to 1
 
 Settings below correspond to "Old Consumer Configs" in [Kafka documentation](http://kafka.apache.org/documentation.html)
@@ -280,6 +296,15 @@ prefixed system property:
 
 ```bash
 $ KAFKA_ZOOKEEPER=127.0.0.1:2181 java -Dzipkin.collector.kafka.overrides.auto.offset.reset=largest -jar zipkin.jar
+```
+
+### RabbitMQ collector
+The [RabbitMQ collector](../zipkin-collector/rabbitmq) will be enabled when the `addresses` for the RabbitMQ server(s) is set.
+
+Example usage:
+
+```bash
+$ RABBIT_ADDRESSES=localhost java -jar zipkin.jar
 ```
 
 ### 128-bit trace IDs
@@ -346,7 +371,7 @@ See [docker-zipkin](https://github.com/openzipkin/docker-zipkin) for details.
 To build and run the server from the currently checked out source, enter the following.
 ```bash
 # Build the server and also make its dependencies
-$ ./mvnw -DskipTests --also-make -pl zipkin-server clean install
+$ ./mvnw -Dlicense.skip=true -DskipTests --also-make -pl zipkin-server clean install
 # Run the server
 $ java -jar ./zipkin-server/target/zipkin-server-*exec.jar
 ```

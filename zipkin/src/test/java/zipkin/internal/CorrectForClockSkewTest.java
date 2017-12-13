@@ -15,7 +15,10 @@ package zipkin.internal;
 
 import java.net.Inet6Address;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.stream.Stream;
 import org.junit.Test;
 import zipkin.Annotation;
@@ -42,21 +45,25 @@ import static zipkin.internal.CorrectForClockSkew.ipsMatch;
 import static zipkin.internal.CorrectForClockSkew.isLocalSpan;
 
 public class CorrectForClockSkewTest {
+  List<String> messages = new ArrayList<>();
+
+  Logger logger = new Logger("", null) {
+    {
+      setLevel(Level.ALL);
+    }
+
+    @Override public void log(Level level, String msg) {
+      assertThat(level).isEqualTo(Level.FINE);
+      messages.add(msg);
+    }
+  };
+
   static final long networkLatency = 10L;
   static final long now = System.currentTimeMillis();
 
-  Endpoint ipv6 = Endpoint.builder()
-      .serviceName("web")
-      // Cheat so we don't have to catch an exception here
-      .ipv6(sun.net.util.IPAddressUtil.textToNumericFormatV6("2001:db8::c001"))
-      .build();
-
-  Endpoint ipv4 = Endpoint.builder()
-      .serviceName("web")
-      .ipv4(124 << 24 | 13 << 16 | 90 << 8 | 2)
-      .build();
-
-  Endpoint both = ipv4.toBuilder().ipv6(ipv6.ipv6).build();
+  Endpoint both = TestObjects.WEB_ENDPOINT;
+  Endpoint ipv6 = TestObjects.WEB_ENDPOINT.toBuilder().ipv4(0).build();
+  Endpoint ipv4 = TestObjects.WEB_ENDPOINT.toBuilder().ipv6(null).build();
 
   @Test
   public void ipsMatch_falseWhenNoIp() {
@@ -158,7 +165,7 @@ public class CorrectForClockSkewTest {
   @Test
   public void ipsMatch_falseWhenIpv4Different() {
     Endpoint different = ipv4.toBuilder()
-        .ipv4(124 << 24 | 13 << 16 | 90 << 8 | 3).build();
+        .ipv4(1 << 24 | 2 << 16 | 3 << 8 | 4).build();
     assertFalse(ipsMatch(different, ipv4));
     assertFalse(ipsMatch(ipv4, different));
   }
@@ -166,7 +173,7 @@ public class CorrectForClockSkewTest {
   @Test
   public void ipsMatch_falseWhenIpv6Different() throws UnknownHostException {
     Endpoint different = ipv6.toBuilder()
-        .ipv6(Inet6Address.getByName("2001:db8::c002").getAddress()).build();
+        .ipv6(Inet6Address.getByName("2001:db8::c113").getAddress()).build();
     assertFalse(ipsMatch(different, ipv6));
     assertFalse(ipsMatch(ipv6, different));
   }
@@ -224,6 +231,52 @@ public class CorrectForClockSkewTest {
     Span adjustedLocal2 = getById(adjustedSpans, local2.id);
     assertThat(local2.timestamp - skew)
         .isEqualTo(adjustedLocal2.timestamp.longValue());
+  }
+
+  @Test
+  public void skipsOnMissingRoot() {
+    long networkLatency = 10L;
+    Span rootSpan = createRootSpan(WEB_ENDPOINT, now, 2000L);
+    long skew = -50000L;
+    Span rpcSpan = childSpan(rootSpan, APP_ENDPOINT, now + networkLatency, 1000L, skew);
+    List<Span> spans = asList(rootSpan.toBuilder().parentId(-1L).build(), rpcSpan);
+
+    assertThat(CorrectForClockSkew.apply(logger, spans))
+      .isSameAs(spans);
+    assertThat(messages).containsExactly(
+      "skipping clock skew adjustment due to missing root span: traceId=0000000000000001"
+    );
+  }
+  @Test
+  public void skipsOnDuplicateRoot() {
+    long networkLatency = 10L;
+    Span rootSpan = createRootSpan(WEB_ENDPOINT, now, 2000L);
+    long skew = -50000L;
+    Span rpcSpan = childSpan(rootSpan, APP_ENDPOINT, now + networkLatency, 1000L, skew);
+    List<Span> spans = asList(rootSpan, rootSpan.toBuilder().id(-1).build(), rpcSpan);
+
+    assertThat(CorrectForClockSkew.apply(logger, spans))
+      .isSameAs(spans);
+    assertThat(messages).containsExactly(
+      "skipping redundant root span: traceId=0000000000000001, rootSpanId=0000000000000001, spanId=ffffffffffffffff",
+      "skipping clock skew adjustment due to data errors: traceId=0000000000000001"
+    );
+  }
+
+  @Test
+  public void skipsOnCycle() {
+    long networkLatency = 10L;
+    Span rootSpan = createRootSpan(WEB_ENDPOINT, now, 2000L);
+    long skew = -50000L;
+    Span rpcSpan = childSpan(rootSpan, APP_ENDPOINT, now + networkLatency, 1000L, skew);
+    List<Span> spans = asList(rootSpan, rpcSpan.toBuilder().parentId(rpcSpan.id).build());
+
+    assertThat(CorrectForClockSkew.apply(logger, spans))
+      .isSameAs(spans);
+    assertThat(messages).containsExactly(
+      "skipping circular dependency: traceId=0000000000000001, spanId=0000000000000002",
+      "skipping clock skew adjustment due to data errors: traceId=0000000000000001"
+    );
   }
 
   static void assertClockSkewIsCorrectlyApplied(long skew) {

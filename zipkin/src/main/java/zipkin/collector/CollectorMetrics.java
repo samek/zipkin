@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -14,16 +14,15 @@
 package zipkin.collector;
 
 import java.util.List;
+import zipkin.Codec;
 import zipkin.storage.AsyncSpanConsumer;
 import zipkin.storage.Callback;
-import zipkin.Codec;
-import zipkin.Span;
 
 /**
  * Instrumented applications report spans over a transport such as Kafka. Zipkin collectors receive
- * these messages, {@link Codec#readSpans(byte[]) decoding them into spans}, {@link
- * CollectorSampler#isSampled(Span) apply sampling}, and {@link AsyncSpanConsumer#accept(List,
- * Callback) queue them for storage}.
+ * these messages, {@link Codec#readSpans(byte[]) decoding them into spans},
+ * {@link CollectorSampler#isSampled(long, Boolean) apply sampling}, and
+ * {@link AsyncSpanConsumer#accept(List, Callback) queues them for storage}.
  *
  * <p>Callbacks on this type are invoked by zipkin collectors to improve the visibility of the
  * system. A typical implementation will report metrics to a telemetry system for analysis and
@@ -31,9 +30,9 @@ import zipkin.Span;
  *
  * <h3>Spans Collected vs Queryable Spans</h3>
  *
- * <p>A span in the context of collection is <= span in the context of query. While it is advised
- * that instrumentation report complete spans, Instrumentation often patch the same span twice, ex
- * adding annotations. Also, RPC spans include at least 2 messages due to the client and the server
+ * <p>A span queried may be comprised of multiple spans collected. While instrumentation should
+ * report complete spans, Instrumentation often patch the same span twice, ex adding annotations.
+ * Also, RPC spans include at least 2 messages due to the client and the server
  * reporting separately. Finally, some storage components merge patches at ingest. For these
  * reasons, you should be cautious to alert on queryable spans vs stored spans, unless you control
  * the instrumentation in such a way that queryable spans/message is reliable.
@@ -46,9 +45,9 @@ import zipkin.Span;
  * <li>Successful Messages = {@link #incrementMessages() Accepted messages} -
  * {@link #incrementMessagesDropped() Dropped messages}. Alert when this is less than amount of
  * messages sent from instrumentation.</li>
- * <li>Stored spans <= {@link #incrementSpans(int) Accepted spans} - {@link
+ * <li>Stored spans &lt;= {@link #incrementSpans(int) Accepted spans} - {@link
  * #incrementSpansDropped(int) Dropped spans}. Alert when this drops below the
- * {@link CollectorSampler#isSampled(Span) collection-tier sample rate}.
+ * {@link CollectorSampler#isSampled(long, Boolean) collection-tier sample rate}.
  * </li>
  * </ul>
  * </pre>
@@ -61,7 +60,7 @@ public interface CollectorMetrics {
    *
    * <p>For example, an implementation may by default report {@link #incrementSpans(int) incremented
    * spans} to the key "zipkin.collector.span.accepted". When {@code metrics.forTransport("kafka"}
-   * is called, the counter would report to "zipkin.collector.scribe.span.accepted"
+   * is called, the counter would report to "zipkin.collector.kafka.span.accepted"
    *
    * @param transportType ex "http", "scribe", "kafka"
    */

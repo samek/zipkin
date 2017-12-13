@@ -13,7 +13,10 @@
  */
 package zipkin.autoconfigure.storage.elasticsearch.http;
 
+import java.util.logging.Logger;
+import okhttp3.Interceptor;
 import okhttp3.OkHttpClient;
+import okhttp3.logging.HttpLoggingInterceptor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -25,38 +28,71 @@ import org.springframework.context.annotation.ConditionContext;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.type.AnnotatedTypeMetadata;
+import zipkin.internal.V2StorageComponent;
 import zipkin.storage.StorageComponent;
 import zipkin.storage.elasticsearch.http.ElasticsearchHttpStorage;
 
 @Configuration
 @EnableConfigurationProperties(ZipkinElasticsearchHttpStorageProperties.class)
 @ConditionalOnProperty(name = "zipkin.storage.type", havingValue = "elasticsearch")
-@Conditional(ZipkinElasticsearchHttpStorageAutoConfiguration.HostsAreUrls.class)
 @ConditionalOnMissingBean(StorageComponent.class)
 public class ZipkinElasticsearchHttpStorageAutoConfiguration {
 
   @Bean
+  @Qualifier("zipkinElasticsearchHttp")
+  @Conditional(HttpLoggingSet.class)
+  Interceptor loggingInterceptor(ZipkinElasticsearchHttpStorageProperties es) {
+    Logger logger = Logger.getLogger(ElasticsearchHttpStorage.class.getName());
+    return new HttpLoggingInterceptor(message -> logger.info(message))
+      .setLevel(es.getHttpLogging());
+  }
+
+  @Bean
+  @Qualifier("zipkinElasticsearchHttp")
+  @Conditional(BasicAuthRequired.class)
+  Interceptor basicAuthInterceptor(ZipkinElasticsearchHttpStorageProperties es) {
+    return new BasicAuthInterceptor(es);
+  }
+
+  @Bean
   @ConditionalOnMissingBean
-  StorageComponent storage(ElasticsearchHttpStorage.Builder esHttpBuilder) {
-    return esHttpBuilder.build();
+  V2StorageComponent storage(ElasticsearchHttpStorage.Builder esHttpBuilder) {
+    return V2StorageComponent.create(esHttpBuilder.build());
+  }
+
+  @Bean ElasticsearchHttpStorage v2Storage(V2StorageComponent component) {
+    return (ElasticsearchHttpStorage) component.delegate();
   }
 
   @Bean
   ElasticsearchHttpStorage.Builder esHttpBuilder(
-      ZipkinElasticsearchHttpStorageProperties elasticsearch,
-      @Qualifier("zipkinElasticsearchHttp") OkHttpClient client,
-      @Value("${zipkin.storage.strict-trace-id:true}") boolean strictTraceId,
-      @Value("${zipkin.query.lookback:86400000}") int namesLookback) {
+    ZipkinElasticsearchHttpStorageProperties elasticsearch,
+    @Qualifier("zipkinElasticsearchHttp") OkHttpClient client,
+    @Value("${zipkin.storage.strict-trace-id:true}") boolean strictTraceId,
+    @Value("${zipkin.query.lookback:86400000}") int namesLookback) {
     return elasticsearch.toBuilder(client)
-        .strictTraceId(strictTraceId)
-        .namesLookback(namesLookback);
+      .strictTraceId(strictTraceId)
+      .namesLookback(namesLookback);
   }
 
-  /** cheap check to see if we are likely to include urls */
-  static final class HostsAreUrls implements Condition {
-    @Override public boolean matches(ConditionContext condition, AnnotatedTypeMetadata md) {
-      String hosts = condition.getEnvironment().getProperty("zipkin.storage.elasticsearch.hosts");
-      return hosts != null && (hosts.contains("http://") || hosts.contains("https://"));
+  static final class HttpLoggingSet implements Condition {
+    @Override public boolean matches(ConditionContext condition, AnnotatedTypeMetadata ignored) {
+      return !isEmpty(condition.getEnvironment()
+        .getProperty("zipkin.storage.elasticsearch.http-logging"));
     }
+  }
+
+  static final class BasicAuthRequired implements Condition {
+    @Override public boolean matches(ConditionContext condition, AnnotatedTypeMetadata ignored) {
+      String userName = condition.getEnvironment()
+        .getProperty("zipkin.storage.elasticsearch.username");
+      String password = condition.getEnvironment()
+        .getProperty("zipkin.storage.elasticsearch.password");
+      return !isEmpty(userName) && !isEmpty(password);
+    }
+  }
+
+  private static boolean isEmpty(String s) {
+    return s == null || s.isEmpty();
   }
 }

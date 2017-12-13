@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -16,7 +16,10 @@ package zipkin.internal;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.stream.IntStream;
+
 import org.junit.Test;
+import zipkin.BinaryAnnotation;
 import zipkin.CodecTest;
 import zipkin.DependencyLink;
 import zipkin.Span;
@@ -45,19 +48,19 @@ public final class ThriftCodecTest extends CodecTest {
   @Test
   public void sizeInBytes_span() throws IOException {
     Span span = TestObjects.LOTS_OF_SPANS[0];
-    assertThat(ThriftCodec.SPAN_ADAPTER.sizeInBytes(span))
+    assertThat(ThriftCodec.SPAN_WRITER.sizeInBytes(span))
         .isEqualTo(codec().writeSpan(span).length);
   }
 
   @Test
   public void sizeInBytes_trace() throws IOException {
-    assertThat(ThriftCodec.SPANS_ADAPTER.sizeInBytes(TestObjects.TRACE))
+    assertThat(ThriftCodec.listSizeInBytes(ThriftCodec.SPAN_WRITER, TestObjects.TRACE))
         .isEqualTo(codec().writeSpans(TestObjects.TRACE).length);
   }
 
   @Test
   public void sizeInBytes_links() throws IOException {
-    assertThat(ThriftCodec.DEPENDENCY_LINKS_ADAPTER.sizeInBytes(TestObjects.LINKS))
+    assertThat(ThriftCodec.listSizeInBytes(ThriftCodec.DEPENDENCY_LINK_ADAPTER, TestObjects.LINKS))
         .isEqualTo(codec().writeDependencyLinks(TestObjects.LINKS).length);
   }
 
@@ -65,10 +68,46 @@ public final class ThriftCodecTest extends CodecTest {
   public void readDependencyLinksFromByteBuffer() throws IOException {
     List<DependencyLink> links = asList(
         DependencyLink.create("foo", "bar", 2),
-        DependencyLink.create("bar", "baz", 3)
+        DependencyLink.builder()
+          .parent("bar")
+          .child("baz")
+          .callCount(3)
+          .errorCount(1).build()
     );
     byte[] bytes = codec().writeDependencyLinks(links);
     assertThat(codec().readDependencyLinks(ByteBuffer.wrap(bytes)))
         .isEqualTo(links);
+  }
+
+  @Test
+  public void writeLargeAnnotations() {
+    Span span = TestObjects.LOTS_OF_SPANS[0].toBuilder().binaryAnnotations(asList(
+      BinaryAnnotation.builder()
+        .key("Large.value")
+        .type(BinaryAnnotation.Type.BYTES)
+        .value(new byte[ThriftCodec.STRING_LENGTH_LIMIT + 1])
+        .build()
+    )).build();
+
+    thrown.expect(AssertionError.class);
+    thrown.expectMessage("Could not write");
+    codec().writeSpan(span);
+  }
+
+  @Test
+  public void writeLargeSpanName() {
+    StringBuilder sb = new StringBuilder();
+    IntStream.range(0, ThriftCodec.STRING_LENGTH_LIMIT + 1).forEach((i) -> sb.append("."));
+
+    Span span = Span.builder()
+      .traceId(0L)
+      .parentId(0L)
+      .id(0L)
+      .name(sb.toString())
+      .build();
+
+    thrown.expect(AssertionError.class);
+    thrown.expectMessage("Could not write");
+    codec().writeSpan(span);
   }
 }

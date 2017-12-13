@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -11,7 +11,6 @@
  * or implied. See the License for the specific language governing permissions and limitations under
  * the License.
  */
-
 package zipkin.storage.cassandra;
 
 import com.datastax.driver.core.BoundStatement;
@@ -31,6 +30,7 @@ import zipkin.Annotation;
 import zipkin.BinaryAnnotation;
 import zipkin.Constants;
 import zipkin.Span;
+import zipkin.internal.Nullable;
 import zipkin.storage.QueryRequest;
 
 import static zipkin.internal.Util.UTF_8;
@@ -86,6 +86,7 @@ final class CassandraUtil {
         String value = new String(b.value, UTF_8);
         if (value.length() > LONGEST_VALUE_TO_INDEX) continue;
 
+        annotationKeys.add(b.endpoint.serviceName + ":" + b.key);
         annotationKeys.add(b.endpoint.serviceName + ":" + b.key + ":" + new String(b.value, UTF_8));
       }
     }
@@ -118,8 +119,12 @@ final class CassandraUtil {
   enum KeySet implements Function<Map<Object, ?>, Set<Object>> {
     INSTANCE;
 
-    @Override public Set<Object> apply(Map<Object, ?> input) {
+    @Override public Set<Object> apply(@Nullable Map<Object, ?> input) {
       return input.keySet();
+    }
+
+    @Override public String toString(){
+      return "Map::keySet";
     }
   }
 
@@ -130,12 +135,16 @@ final class CassandraUtil {
   enum IntersectKeySets implements Function<List<Map<Object, ?>>, Set<Object>> {
     INSTANCE;
 
-    @Override public Set<Object> apply(List<Map<Object, ?>> input) {
+    @Override public Set<Object> apply(@Nullable List<Map<Object, ?>> input) {
       Set<Object> traceIds = Sets.newLinkedHashSet(input.get(0).keySet());
       for (int i = 1; i < input.size(); i++) {
         traceIds.retainAll(input.get(i).keySet());
       }
       return traceIds;
+    }
+
+    @Override public String toString(){
+      return "IntersectKeySets";
     }
   }
 }

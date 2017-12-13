@@ -15,11 +15,31 @@ import TracesUI from '../component_ui/traces';
 import TimeStampUI from '../component_ui/timeStamp';
 import BackToTop from '../component_ui/backToTop';
 import {defaultTemplate} from '../templates';
+import {contextRoot} from '../publicPath';
+import {i18nInit} from '../component_ui/i18n';
 
 const DefaultPageComponent = component(function DefaultPage() {
+  const sortOptions = [
+    {value: 'service-percentage-desc', text: 'Service Percentage: Longest First'},
+    {value: 'service-percentage-asc', text: 'Service Percentage: Shortest First'},
+    {value: 'duration-desc', text: 'Longest First'},
+    {value: 'duration-asc', text: 'Shortest First'},
+    {value: 'timestamp-desc', text: 'Newest First'},
+    {value: 'timestamp-asc', text: 'Oldest First'}
+  ];
+
+  const sortSelected = function getSelector(selectedSortValue) {
+    return function selected() {
+      if (this.value === selectedSortValue) {
+        return 'selected';
+      }
+      return '';
+    };
+  };
+
   this.after('initialize', function() {
     window.document.title = 'Zipkin - Index';
-    this.trigger(document, 'navigate', {route: 'index'});
+    this.trigger(document, 'navigate', {route: 'zipkin/index'});
 
     const query = queryString.parse(window.location.search);
 
@@ -30,6 +50,7 @@ const DefaultPageComponent = component(function DefaultPage() {
       const startTs = query.startTs || (endTs - this.attr.config('defaultLookback'));
       const serviceName = query.serviceName || '';
       const annotationQuery = query.annotationQuery || '';
+      const sortOrder = query.sortOrder || 'duration-desc';
       const queryWasPerformed = serviceName && serviceName.length > 0;
       this.$node.html(defaultTemplate({
         limit,
@@ -39,7 +60,10 @@ const DefaultPageComponent = component(function DefaultPage() {
         serviceName,
         annotationQuery,
         queryWasPerformed,
+        contextRoot,
         count: modelView.traces.length,
+        sortOrderOptions: sortOptions,
+        sortOrderSelected: sortSelected(sortOrder),
         apiURL: modelView.apiURL,
         ...modelView
       }));
@@ -56,6 +80,7 @@ const DefaultPageComponent = component(function DefaultPage() {
       TimeStampUI.attachTo('#end-ts');
       TimeStampUI.attachTo('#start-ts');
       BackToTop.attachTo('#backToTop');
+      i18nInit('traces');
 
       $('.timeago').timeago();
 

@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -39,8 +39,6 @@ import zipkin.BinaryAnnotation;
 import zipkin.BinaryAnnotation.Type;
 import zipkin.DependencyLink;
 import zipkin.Endpoint;
-import zipkin.Span;
-import zipkin.internal.DependencyLinkSpan;
 import zipkin.internal.DependencyLinker;
 import zipkin.internal.GroupByTraceId;
 import zipkin.internal.Nullable;
@@ -48,6 +46,7 @@ import zipkin.internal.Pair;
 import zipkin.storage.QueryRequest;
 import zipkin.storage.SpanStore;
 import zipkin.storage.mysql.internal.generated.tables.ZipkinAnnotations;
+import zipkin2.Span;
 
 import static java.util.Collections.emptyList;
 import static java.util.stream.Collectors.groupingBy;
@@ -55,6 +54,7 @@ import static org.jooq.impl.DSL.row;
 import static zipkin.BinaryAnnotation.Type.STRING;
 import static zipkin.Constants.CLIENT_ADDR;
 import static zipkin.Constants.CLIENT_SEND;
+import static zipkin.Constants.ERROR;
 import static zipkin.Constants.SERVER_ADDR;
 import static zipkin.Constants.SERVER_RECV;
 import static zipkin.internal.Util.UTF_8;
@@ -99,7 +99,6 @@ final class MySQLSpanStore implements SpanStore {
       ZipkinAnnotations aTable = ZIPKIN_ANNOTATIONS.as("a" + i++);
       table = maybeOnService(table.join(aTable)
           .on(schema.joinCondition(aTable))
-          .and(aTable.A_TYPE.eq(-1))
           .and(aTable.A_KEY.eq(key)), aTable, request.serviceName);
     }
 
@@ -142,10 +141,10 @@ final class MySQLSpanStore implements SpanStore {
     return table.and(aTable.ENDPOINT_SERVICE_NAME.eq(serviceName));
   }
 
-  List<List<Span>> getTraces(@Nullable QueryRequest request, @Nullable Long traceIdHigh,
+  List<List<zipkin.Span>> getTraces(@Nullable QueryRequest request, @Nullable Long traceIdHigh,
       @Nullable Long traceIdLow, boolean raw) {
     if (traceIdHigh != null && !strictTraceId) traceIdHigh = null;
-    final Map<Pair<Long>, List<Span>> spansWithoutAnnotations;
+    final Map<Pair<Long>, List<zipkin.Span>> spansWithoutAnnotations;
     final Map<Row3<Long, Long, Long>, List<Record>> dbAnnotations;
     try (Connection conn = datasource.getConnection()) {
       Condition traceIdCondition = request != null
@@ -156,7 +155,7 @@ final class MySQLSpanStore implements SpanStore {
           .select(schema.spanFields)
           .from(ZIPKIN_SPANS).where(traceIdCondition)
           .stream()
-          .map(r -> Span.builder()
+          .map(r -> zipkin.Span.builder()
               .traceIdHigh(maybeGet(r, ZIPKIN_SPANS.TRACE_ID_HIGH, 0L))
               .traceId(r.getValue(ZIPKIN_SPANS.TRACE_ID))
               .name(r.getValue(ZIPKIN_SPANS.NAME))
@@ -167,8 +166,8 @@ final class MySQLSpanStore implements SpanStore {
               .debug(r.getValue(ZIPKIN_SPANS.DEBUG))
               .build())
           .collect(
-              groupingBy((Span s) -> Pair.create(s.traceIdHigh, s.traceId),
-                  LinkedHashMap::new, Collectors.<Span>toList()));
+              groupingBy((zipkin.Span s) -> Pair.create(s.traceIdHigh, s.traceId),
+                  LinkedHashMap::new, Collectors.<zipkin.Span>toList()));
 
       dbAnnotations = context.get(conn)
           .select(schema.annotationFields)
@@ -186,10 +185,10 @@ final class MySQLSpanStore implements SpanStore {
       throw new RuntimeException("Error querying for " + request + ": " + e.getMessage());
     }
 
-    List<Span> allSpans = new ArrayList<>(spansWithoutAnnotations.size());
-    for (List<Span> spans : spansWithoutAnnotations.values()) {
-      for (Span s : spans) {
-        Span.Builder span = s.toBuilder();
+    List<zipkin.Span> allSpans = new ArrayList<>(spansWithoutAnnotations.size());
+    for (List<zipkin.Span> spans : spansWithoutAnnotations.values()) {
+      for (zipkin.Span s : spans) {
+        zipkin.Span.Builder span = s.toBuilder();
         Row3<Long, Long, Long> key = row(s.traceIdHigh, s.traceId, s.id);
 
         if (dbAnnotations.containsKey(key)) {
@@ -225,27 +224,27 @@ final class MySQLSpanStore implements SpanStore {
   }
 
   @Override
-  public List<List<Span>> getTraces(QueryRequest request) {
+  public List<List<zipkin.Span>> getTraces(QueryRequest request) {
     return getTraces(request, null, null, false);
   }
 
   @Override
-  public List<Span> getTrace(long traceId) {
+  public List<zipkin.Span> getTrace(long traceId) {
     return getTrace(0L, traceId);
   }
 
-  @Override public List<Span> getTrace(long traceIdHigh, long traceIdLow) {
-    List<List<Span>> result = getTraces(null, traceIdHigh, traceIdLow, false);
+  @Override public List<zipkin.Span> getTrace(long traceIdHigh, long traceIdLow) {
+    List<List<zipkin.Span>> result = getTraces(null, traceIdHigh, traceIdLow, false);
     return result.isEmpty() ? null : result.get(0);
   }
 
   @Override
-  public List<Span> getRawTrace(long traceId) {
+  public List<zipkin.Span> getRawTrace(long traceId) {
     return getRawTrace(0L, traceId);
   }
 
-  @Override public List<Span> getRawTrace(long traceIdHigh, long traceIdLow) {
-    List<List<Span>> result = getTraces(null, traceIdHigh, traceIdLow, true);
+  @Override public List<zipkin.Span> getRawTrace(long traceIdHigh, long traceIdLow) {
+    List<List<zipkin.Span>> result = getTraces(null, traceIdHigh, traceIdLow, true);
     return result.isEmpty() ? null : result.get(0);
   }
 
@@ -288,12 +287,15 @@ final class MySQLSpanStore implements SpanStore {
       if (schema.hasPreAggregatedDependencies) {
         List<Date> days = getDays(endTs, lookback);
         List<DependencyLink> unmerged = context.get(conn)
-            .selectFrom(ZIPKIN_DEPENDENCIES)
+            .select(schema.dependencyLinkFields)
+            .from(ZIPKIN_DEPENDENCIES)
             .where(ZIPKIN_DEPENDENCIES.DAY.in(days))
-            .fetch((Record l) -> DependencyLink.create(
-                l.get(ZIPKIN_DEPENDENCIES.PARENT),
-                l.get(ZIPKIN_DEPENDENCIES.CHILD),
-                l.get(ZIPKIN_DEPENDENCIES.CALL_COUNT))
+            .fetch((Record l) -> DependencyLink.builder()
+                .parent(l.get(ZIPKIN_DEPENDENCIES.PARENT))
+                .child(l.get(ZIPKIN_DEPENDENCIES.CHILD))
+                .callCount(l.get(ZIPKIN_DEPENDENCIES.CALL_COUNT))
+                .errorCount(maybeGet(l, ZIPKIN_DEPENDENCIES.ERROR_COUNT, 0L))
+                .build()
             );
         return DependencyLinker.merge(unmerged);
       } else {
@@ -309,7 +311,7 @@ final class MySQLSpanStore implements SpanStore {
     endTs = endTs * 1000;
     // Lazy fetching the cursor prevents us from buffering the whole dataset in memory.
     Cursor<Record> cursor = context.get(conn)
-        .selectDistinct(schema.dependencyLinkFields)
+        .selectDistinct(schema.dependencyLinkerFields)
         // left joining allows us to keep a mapping of all span ids, not just ones that have
         // special annotations. We need all span ids to reconstruct the trace tree. We need
         // the whole trace tree so that we can accurately skip local spans.
@@ -318,15 +320,15 @@ final class MySQLSpanStore implements SpanStore {
             // for applications to upgrade to 128-bit instrumentation.
             .on(ZIPKIN_SPANS.TRACE_ID.eq(ZIPKIN_ANNOTATIONS.TRACE_ID).and(
                 ZIPKIN_SPANS.ID.eq(ZIPKIN_ANNOTATIONS.SPAN_ID)))
-            .and(ZIPKIN_ANNOTATIONS.A_KEY.in(CLIENT_SEND, CLIENT_ADDR, SERVER_RECV, SERVER_ADDR)))
+            .and(ZIPKIN_ANNOTATIONS.A_KEY.in(CLIENT_SEND, CLIENT_ADDR, SERVER_RECV, SERVER_ADDR, ERROR)))
         .where(lookback == null ?
             ZIPKIN_SPANS.START_TS.lessOrEqual(endTs) :
             ZIPKIN_SPANS.START_TS.between(endTs - lookback * 1000, endTs))
         // Grouping so that later code knows when a span or trace is finished.
-        .groupBy(schema.dependencyLinkGroupByFields).fetchLazy();
+        .groupBy(schema.dependencyLinkerGroupByFields).fetchLazy();
 
-    Iterator<Iterator<DependencyLinkSpan>> traces =
-        new DependencyLinkSpanIterator.ByTraceId(cursor.iterator(), schema.hasTraceIdHigh);
+    Iterator<Iterator<Span>> traces =
+        new DependencyLinkV2SpanIterator.ByTraceId(cursor.iterator(), schema.hasTraceIdHigh);
 
     if (!traces.hasNext()) return Collections.emptyList();
 

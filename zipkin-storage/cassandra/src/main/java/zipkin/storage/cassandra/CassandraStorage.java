@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -11,7 +11,6 @@
  * or implied. See the License for the specific language governing permissions and limitations under
  * the License.
  */
-
 package zipkin.storage.cassandra;
 
 import com.datastax.driver.core.Session;
@@ -22,7 +21,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import java.io.IOException;
-import java.util.LinkedList;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import zipkin.internal.Nullable;
@@ -98,7 +97,7 @@ public final class CassandraStorage
       return this;
     }
 
-    /** Comma separated list of hosts / IPs part of Cassandra cluster. Defaults to localhost */
+    /** Comma separated list of host addresses part of Cassandra cluster. You can also specify a custom port with 'host:port'. Defaults to localhost on port 9042 **/
     public Builder contactPoints(String contactPoints) {
       this.contactPoints = checkNotNull(contactPoints, "contactPoints");
       return this;
@@ -223,7 +222,7 @@ public final class CassandraStorage
      *
      * <p>Indexing in cassandra will usually have more rows than trace identifiers due to factors
      * including table design and collection implementation. As there's no way to DISTINCT out
-     * duplicates server-side, this over-fetches client-side when {@code indexFetchMultiplier} > 1.
+     * duplicates server-side, this over-fetches client-side when {@code indexFetchMultiplier} &gt; 1.
      */
     public Builder indexFetchMultiplier(int indexFetchMultiplier) {
       this.indexFetchMultiplier = indexFetchMultiplier;
@@ -309,7 +308,7 @@ public final class CassandraStorage
   /** Truncates all the column families, or throws on any failure. */
   @VisibleForTesting void clear() {
     guavaSpanConsumer().clear();
-    List<ListenableFuture<?>> futures = new LinkedList<>();
+    List<ListenableFuture<?>> futures = new ArrayList<>();
     for (String cf : ImmutableList.of(
         "traces",
         "dependencies",

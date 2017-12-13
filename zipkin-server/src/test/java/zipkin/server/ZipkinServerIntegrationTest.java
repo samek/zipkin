@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -13,145 +13,205 @@
  */
 package zipkin.server;
 
+import com.jayway.jsonpath.JsonPath;
+import io.prometheus.client.Histogram;
+import java.io.IOException;
+import java.util.List;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 import okio.Buffer;
 import okio.GzipSink;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.embedded.LocalServerPort;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.http.HttpHeaders;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
-import org.springframework.test.context.web.WebAppConfiguration;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.ResultActions;
-import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import org.springframework.web.context.ConfigurableWebApplicationContext;
+import org.springframework.test.context.junit4.SpringRunner;
 import zipkin.Codec;
 import zipkin.Span;
-import zipkin.storage.InMemoryStorage;
+import zipkin.internal.ApplyTimestampAndDuration;
+import zipkin.internal.V2SpanConverter;
+import zipkin2.codec.SpanBytesEncoder;
+import zipkin2.storage.InMemoryStorage;
 
 import static java.lang.String.format;
 import static java.util.Arrays.asList;
-import static org.hamcrest.CoreMatchers.startsWith;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.assertj.core.api.Assertions.assertThat;
+import static zipkin.TestObjects.LOTS_OF_SPANS;
 import static zipkin.TestObjects.TRACE;
 import static zipkin.TestObjects.span;
 import static zipkin.internal.Util.UTF_8;
 
-@SpringBootTest(classes = ZipkinServer.class)
-@RunWith(SpringJUnit4ClassRunner.class)
-@WebAppConfiguration
-@TestPropertySource(properties = {"zipkin.store.type=mem", "spring.config.name=zipkin-server", "zipkin.collector.scribe.enabled=false"})
+@SpringBootTest(
+  classes = ZipkinServer.class,
+  webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+  properties = "spring.config.name=zipkin-server"
+)
+@RunWith(SpringRunner.class)
 public class ZipkinServerIntegrationTest {
 
-  @Autowired
-  ConfigurableWebApplicationContext context;
-  @Autowired
-  InMemoryStorage storage;
-  @Autowired
-  ActuateCollectorMetrics metrics;
+  @Autowired InMemoryStorage storage;
+  @Autowired ActuateCollectorMetrics metrics;
+  @Autowired Histogram duration;
+  @LocalServerPort int zipkinPort;
 
-  MockMvc mockMvc;
+  OkHttpClient client = new OkHttpClient.Builder().followRedirects(false).build();
 
-  @Before
-  public void init() {
-    mockMvc = MockMvcBuilders.webAppContextSetup(context).build();
+  @Before public void init() {
     storage.clear();
+    duration.clear();
     metrics.forTransport("http").reset();
   }
 
-  @Test
-  public void writeSpans_noContentTypeIsJson() throws Exception {
+  @Test public void writeSpans_noContentTypeIsJson() throws Exception {
+    Response response = post("/api/v1/spans", Codec.JSON.writeSpans(TRACE));
+
+    assertThat(response.code())
+      .isEqualTo(202);
+  }
+
+  @Test public void writeSpans_version2() throws Exception {
+    Span span = ApplyTimestampAndDuration.apply(LOTS_OF_SPANS[0]);
+
+    byte[] message = SpanBytesEncoder.JSON_V2.encodeList(asList(
+      V2SpanConverter.fromSpan(span).get(0)
+    ));
+
+    assertThat(post("/api/v2/spans", message).code())
+      .isEqualTo(202);
+
+    // sleep as the the storage operation is async
+    Thread.sleep(1500);
+
+    Response response = get("/api/v1/trace/" + span.traceIdString());
+    assertThat(response.isSuccessful()).isTrue();
+
+    // We read it back in span v1 format
+    assertThat(response.body().bytes())
+      .isEqualTo(Codec.JSON.writeSpans(asList(span)));
+  }
+
+  @Test public void writeSpans_updatesMetrics() throws Exception {
+    List<Span> spans = asList(LOTS_OF_SPANS[0], LOTS_OF_SPANS[1], LOTS_OF_SPANS[2]);
+    byte[] body = Codec.JSON.writeSpans(spans);
+    post("/api/v1/spans", body);
+    post("/api/v1/spans", body);
+
+    Response response = get("/metrics");
+    assertThat(response.isSuccessful()).isTrue();
+    String json = response.body().string();
+
+    assertThat(readInteger(json, "$.['counter.zipkin_collector.messages.http']"))
+      .isEqualTo(2);
+    assertThat(readInteger(json, "$.['counter.zipkin_collector.bytes.http']"))
+      .isEqualTo(body.length * 2);
+    assertThat(readDouble(json, "$.['gauge.zipkin_collector.message_bytes.http']"))
+      .isEqualTo(body.length);
+    assertThat(readInteger(json, "$.['counter.zipkin_collector.spans.http']"))
+      .isEqualTo(spans.size() * 2);
+    assertThat(readDouble(json, "$.['gauge.zipkin_collector.message_spans.http']"))
+      .isEqualTo(spans.size());
+  }
+
+  /** Makes sure the prometheus filter doesn't count twice */
+  @Test public void writeSpans_updatesPrometheusMetrics() throws Exception {
+    List<Span> spans = asList(LOTS_OF_SPANS[0], LOTS_OF_SPANS[1], LOTS_OF_SPANS[2]);
+    byte[] body = Codec.JSON.writeSpans(spans);
+    post("/api/v1/spans", body);
+    post("/api/v1/spans", body);
+
+    Response response = get("/prometheus");
+    assertThat(response.isSuccessful()).isTrue();
+    String prometheus = response.body().string();
+
+    assertThat(prometheus)
+      .contains("http_request_duration_seconds_count{path=\"/api/v1/spans\",method=\"POST\",} 2.0");
+  }
+
+  @Test public void tracesQueryRequiresNoParameters() throws Exception {
     byte[] body = Codec.JSON.writeSpans(TRACE);
-    performAsync(post("/api/v1/spans").content(body))
-        .andExpect(status().isAccepted());
+    post("/api/v1/spans", body);
+
+    Response response = get("/api/v1/traces");
+    assertThat(response.isSuccessful()).isTrue();
+    assertThat(response.body().string())
+      .isEqualTo("[" + new String(body, UTF_8) + "]");
   }
 
-  @Test
-  public void writeSpans_updatesMetrics() throws Exception {
-    byte[] body = Codec.JSON.writeSpans(TRACE);
-    mockMvc.perform(post("/api/v1/spans").content(body));
-    mockMvc.perform(post("/api/v1/spans").content(body));
-
-    mockMvc
-        .perform(get("/metrics"))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.['counter.zipkin_collector.messages.http']").value(2))
-        .andExpect(jsonPath("$.['counter.zipkin_collector.bytes.http']").value(body.length * 2))
-        .andExpect(jsonPath("$.['gauge.zipkin_collector.message_bytes.http']")
-            .value(Double.valueOf(body.length))) // most recent size
-        .andExpect(jsonPath("$.['counter.zipkin_collector.spans.http']").value(TRACE.size() * 2))
-        .andExpect(jsonPath("$.['gauge.zipkin_collector.message_spans.http']")
-            .value(Double.valueOf(TRACE.size()))); // most recent count
-  }
-
-  @Test
-  public void tracesQueryRequiresNoParameters() throws Exception {
-    byte[] body = Codec.JSON.writeSpans(TRACE);
-    performAsync(post("/api/v1/spans").content(body));
-
-    mockMvc.perform(get("/api/v1/traces"))
-        .andExpect(status().isOk())
-        .andExpect(content().string("[" + new String(body, UTF_8) + "]"));
-  }
-
-  @Test
-  public void writeSpans_malformedJsonIsBadRequest() throws Exception {
+  @Test public void writeSpans_malformedJsonIsBadRequest() throws Exception {
     byte[] body = {'h', 'e', 'l', 'l', 'o'};
-    performAsync(post("/api/v1/spans").content(body))
-        .andExpect(status().isBadRequest())
-        .andExpect(content().string(startsWith("Malformed reading List<Span> from json: hello")));
+
+    Response response = post("/api/v1/spans", body);
+    assertThat(response.code()).isEqualTo(400);
+    assertThat(response.body().string())
+      .startsWith("Malformed reading List<Span> from json");
   }
 
-  @Test
-  public void writeSpans_malformedUpdatesMetrics() throws Exception {
+  @Test public void writeSpans_malformedUpdatesMetrics() throws Exception {
     byte[] body = {'h', 'e', 'l', 'l', 'o'};
-    mockMvc.perform(post("/api/v1/spans").content(body));
+    post("/api/v1/spans", body);
 
-    mockMvc
-        .perform(get("/metrics"))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.['counter.zipkin_collector.messages.http']").value(1))
-        .andExpect(jsonPath("$.['counter.zipkin_collector.messages_dropped.http']").value(1));
+    Response response = get("/metrics");
+    assertThat(response.isSuccessful()).isTrue();
+    String json = response.body().string();
+
+    assertThat(readInteger(json, "$.['counter.zipkin_collector.messages.http']"))
+      .isEqualTo(1);
+    assertThat(readInteger(json, "$.['counter.zipkin_collector.messages_dropped.http']"))
+      .isEqualTo(1);
   }
 
-  @Test
-  public void writeSpans_malformedGzipIsBadRequest() throws Exception {
+  @Test public void writeSpans_malformedGzipIsBadRequest() throws Exception {
     byte[] body = {'h', 'e', 'l', 'l', 'o'};
-    performAsync(post("/api/v1/spans").content(body).header("Content-Encoding", "gzip"))
-        .andExpect(status().isBadRequest())
-        .andExpect(content().string(startsWith("Cannot gunzip spans")));
+
+    Response response = client.newCall(new Request.Builder()
+      .url("http://localhost:" + zipkinPort + "/api/v1/spans")
+      .header("Content-Encoding", "gzip") // << gzip here, but the body isn't!
+      .post(RequestBody.create(null, body))
+      .build()).execute();
+
+    assertThat(response.code()).isEqualTo(400);
+    assertThat(response.body().string())
+      .startsWith("Cannot gunzip spans");
   }
 
-  @Test
-  public void writeSpans_contentTypeXThrift() throws Exception {
+  @Test public void writeSpans_contentTypeXThrift() throws Exception {
     byte[] body = Codec.THRIFT.writeSpans(TRACE);
-    performAsync(post("/api/v1/spans").content(body).contentType("application/x-thrift"))
-        .andExpect(status().isAccepted());
+
+    Response response = client.newCall(new Request.Builder()
+      .url("http://localhost:" + zipkinPort + "/api/v1/spans")
+      .post(RequestBody.create(MediaType.parse("application/x-thrift"), body))
+      .build()).execute();
+
+    assertThat(response.code())
+      .isEqualTo(202);
   }
 
-  @Test
-  public void writeSpans_malformedThriftIsBadRequest() throws Exception {
+  @Test public void writeSpans_malformedThriftIsBadRequest() throws Exception {
     byte[] body = {'h', 'e', 'l', 'l', 'o'};
-    performAsync(post("/api/v1/spans").content(body).contentType("application/x-thrift"))
-        .andExpect(status().isBadRequest())
-        .andExpect(content().string(startsWith("Malformed reading List<Span> from TBinary")));
+
+    Response response = client.newCall(new Request.Builder()
+      .url("http://localhost:" + zipkinPort + "/api/v1/spans")
+      .post(RequestBody.create(MediaType.parse("application/x-thrift"), body))
+      .build()).execute();
+
+    assertThat(response.code()).isEqualTo(400);
+    assertThat(response.body().string())
+      .startsWith("Malformed reading List<Span> from TBinary");
   }
 
-  @Test
-  public void healthIsOK() throws Exception {
-    mockMvc
-        .perform(get("/health"))
-        .andExpect(status().isOk());
+  @Test public void healthIsOK() throws Exception {
+    assertThat(get("/health").isSuccessful())
+      .isTrue();
+  }
+
+  @Test public void v2WiresUp() throws Exception {
+    assertThat(get("/api/v2/services").isSuccessful())
+      .isTrue();
   }
 
   public void writeSpans_gzipEncoded() throws Exception {
@@ -163,99 +223,139 @@ public class ZipkinServerIntegrationTest {
     gzipSink.close();
     byte[] gzippedBody = sink.readByteArray();
 
-    mockMvc
-        .perform(post("/api/v1/spans").content(gzippedBody).header("Content-Encoding", "gzip"))
-        .andExpect(status().isAccepted());
+    Response response = client.newCall(new Request.Builder()
+      .url("http://localhost:" + zipkinPort + "/api/v1/spans")
+      .header("Content-Encoding", "gzip")
+      .post(RequestBody.create(null, gzippedBody))
+      .build()).execute();
+
+    assertThat(response.isSuccessful());
   }
 
-  @Test
-  public void readsRawTrace() throws Exception {
+  @Test public void readsRawTrace() throws Exception {
     Span span = TRACE.get(0);
 
     // write the span to the server, twice
-    performAsync(post("/api/v1/spans").content(Codec.JSON.writeSpans(asList(span))))
-        .andExpect(status().isAccepted());
-    performAsync(post("/api/v1/spans").content(Codec.JSON.writeSpans(asList(span))))
-        .andExpect(status().isAccepted());
+    post("/api/v1/spans", Codec.JSON.writeSpans(asList(span)));
+    post("/api/v1/spans", Codec.JSON.writeSpans(asList(span)));
 
     // sleep as the the storage operation is async
     Thread.sleep(1500);
 
     // Default will merge by span id
-    mockMvc.perform(get(format("/api/v1/trace/%016x", span.traceId)))
-        .andExpect(status().isOk())
-        .andExpect(content().string(new String(Codec.JSON.writeSpans(asList(span)), UTF_8)));
+    Response response = get(format("/api/v1/trace/%016x", span.traceId));
+    assertThat(response.isSuccessful());
+    assertThat(response.body().bytes())
+      .isEqualTo(Codec.JSON.writeSpans(asList(span)));
 
     // In the in-memory (or cassandra) stores, a raw read will show duplicate span rows.
-    mockMvc.perform(get(format("/api/v1/trace/%016x?raw", span.traceId)))
-        .andExpect(status().isOk())
-        .andExpect(content().string(new String(Codec.JSON.writeSpans(asList(span, span)), UTF_8)));
+    Response raw = get(format("/api/v1/trace/%016x?raw", span.traceId));
+    assertThat(raw.isSuccessful());
+    assertThat(raw.body().bytes())
+      .isEqualTo(Codec.JSON.writeSpans(asList(span, span)));
   }
 
-  @Test
-  public void getBy128BitId() throws Exception {
+  @Test public void getBy128BitId() throws Exception {
     Span span1 = TRACE.get(0).toBuilder().traceIdHigh(1L).build();
     Span span2 = span1.toBuilder().traceIdHigh(2L).build();
 
-    performAsync(post("/api/v1/spans").content(Codec.JSON.writeSpans(asList(span1, span2))))
-        .andExpect(status().isAccepted());
+    Response post = post("/api/v1/spans", Codec.JSON.writeSpans(asList(span1, span2)));
+    assertThat(post.isSuccessful());
 
     // sleep as the the storage operation is async
     Thread.sleep(1500);
 
     // Tosses high bits
-    mockMvc.perform(get(format("/api/v1/trace/%016x%016x", span2.traceIdHigh, span2.traceId)))
-        .andExpect(status().isOk())
-        .andExpect(content().string(new String(Codec.JSON.writeSpans(asList(span2)), UTF_8)));
+    Response response = get(format("/api/v1/trace/%016x%016x", span2.traceIdHigh, span2.traceId));
+
+    assertThat(response.isSuccessful());
+    assertThat(response.body().bytes())
+      .isEqualTo(Codec.JSON.writeSpans(asList(span2)));
   }
 
   /** The zipkin-ui is a single-page app. This prevents reloading all resources on each click. */
-  @Test
-  public void setsMaxAgeOnUiResources() throws Exception {
-    mockMvc.perform(get("/favicon.ico"))
-        .andExpect(header().string("Cache-Control", "max-age=31536000"));
-    mockMvc.perform(get("/config.json"))
-        .andExpect(header().string("Cache-Control", "max-age=600"));
-    mockMvc.perform(get("/index.html"))
-        .andExpect(header().string("Cache-Control", "max-age=60"));
+  @Test public void setsMaxAgeOnUiResources() throws Exception {
+    assertThat(get("/zipkin/favicon.ico").header("Cache-Control"))
+      .isEqualTo("max-age=31536000");
+    assertThat(get("/zipkin/config.json").header("Cache-Control"))
+      .isEqualTo("max-age=600");
+    assertThat(get("/zipkin/index.html").header("Cache-Control"))
+      .isEqualTo("max-age=60");
   }
 
-  @Test
-  public void doesntSetCacheControlOnNameEndpointsWhenLessThan4Services() throws Exception {
-    performAsync(post("/api/v1/spans")
-        .content("[" + new String(Codec.JSON.writeSpan(TRACE.get(0)), UTF_8) + "]"));
+  @Test public void doesntSetCacheControlOnNameEndpointsWhenLessThan4Services() throws Exception {
+    String json = "[" + new String(Codec.JSON.writeSpan(TRACE.get(0)), UTF_8) + "]";
+    post("/api/v1/spans", json.getBytes(UTF_8));
 
-    mockMvc.perform(get("/api/v1/services"))
-        .andExpect(status().isOk())
-        .andExpect(header().doesNotExist("Cache-Control"));
+    assertThat(get("/api/v1/services").header("Cache-Control"))
+      .isNull();
 
-    mockMvc.perform(get("/api/v1/spans?serviceName=web"))
-        .andExpect(status().isOk())
-        .andExpect(header().doesNotExist("Cache-Control"));
+    assertThat(get("/api/v1/spans?serviceName=web").header("Cache-Control"))
+      .isNull();
   }
 
-  @Test
-  public void setsCacheControlOnNameEndpointsWhenMoreThan3Services() throws Exception {
-    mockMvc.perform(post("/api/v1/spans").content(Codec.JSON.writeSpans(TRACE)));
-    mockMvc.perform(post("/api/v1/spans").content(Codec.JSON.writeSpans(asList(span(1)))));
+  @Test public void setsCacheControlOnNameEndpointsWhenMoreThan3Services() throws Exception {
+    post("/api/v1/spans", Codec.JSON.writeSpans(TRACE));
+    post("/api/v1/spans", Codec.JSON.writeSpans(asList(span(1))));
 
-    mockMvc.perform(get("/api/v1/services"))
-        .andExpect(status().isOk())
-        .andExpect(header().string("Cache-Control", "max-age=300, must-revalidate"));
+    assertThat(get("/api/v1/services").header("Cache-Control"))
+      .isEqualTo("max-age=300, must-revalidate");
 
-    mockMvc.perform(get("/api/v1/spans?serviceName=web"))
-        .andExpect(status().isOk())
-        .andExpect(header().string("Cache-Control", "max-age=300, must-revalidate"));
+    assertThat(get("/api/v1/spans?serviceName=web").header("Cache-Control"))
+      .isEqualTo("max-age=300, must-revalidate");
   }
 
-  @Test
-  public void shouldAllowAnyOriginByDefault() throws Exception {
-    mockMvc.perform(get("/api/v1/traces")
-        .header(HttpHeaders.ORIGIN, "foo.example.com"))
-           .andExpect(status().isOk());
+  @Test public void shouldAllowAnyOriginByDefault() throws Exception {
+    Response response = client.newCall(new Request.Builder()
+      .url("http://localhost:" + zipkinPort + "/api/v1/traces")
+      .header("Origin", "http://foo.example.com")
+      .build()).execute();
+
+    assertThat(response.isSuccessful()).isTrue();
+    assertThat(response.header("vary")).contains("origin");
+    assertThat(response.header("access-control-allow-credentials")).isNull();
+    assertThat(response.header("access-control-allow-origin")).contains("*");
   }
 
-  ResultActions performAsync(MockHttpServletRequestBuilder request) throws Exception {
-    return mockMvc.perform(asyncDispatch(mockMvc.perform(request).andReturn()));
+  @Test public void forwardsApiForUi() throws Exception {
+    assertThat(get("/zipkin/api/v1/traces").isSuccessful()).isTrue();
+    assertThat(get("/zipkin/api/v2/traces").isSuccessful()).isTrue();
+  }
+
+  /** Simulate a proxy which forwards / to zipkin as opposed to resolving / -> /zipkin first */
+  @Test public void redirectedHeaderUsesOriginalHostAndPort() throws Exception {
+    Request forwarded = new Request.Builder()
+      .url("http://localhost:" + zipkinPort + "/")
+      .addHeader("Host", "zipkin.com")
+      .addHeader("X-Forwarded-Proto", "https")
+      .addHeader("X-Forwarded-Port", "444")
+      .build();
+
+    Response response = client.newCall(forwarded).execute();
+
+    // Redirect header should be the proxy, not the backed IP/port
+    assertThat(response.header("Location"))
+      .isEqualTo("./zipkin/");
+  }
+
+  private Response get(String path) throws IOException {
+    return client.newCall(new Request.Builder()
+      .url("http://localhost:" + zipkinPort + path)
+      .build()).execute();
+  }
+
+  private Response post(String path, byte[] body) throws IOException {
+    return client.newCall(new Request.Builder()
+      .url("http://localhost:" + zipkinPort + path)
+      .post(RequestBody.create(null, body))
+      .build()).execute();
+  }
+
+  static Integer readInteger(String json, String jsonPath) {
+    return JsonPath.compile(jsonPath).read(json);
+  }
+
+  static Double readDouble(String json, String jsonPath) {
+    return JsonPath.compile(jsonPath).read(json);
   }
 }

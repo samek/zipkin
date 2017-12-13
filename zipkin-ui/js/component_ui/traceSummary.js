@@ -42,78 +42,70 @@ export function getServiceNames(span) {
       .uniq().value();
 }
 
+function findServiceNameForBinaryAnnotation(span, key) {
+  const binaryAnnotation = _(span.binaryAnnotations || []).find((ann) =>
+            ann.key === key
+            && ann.endpoint != null
+            && ann.endpoint.serviceName != null
+            && ann.endpoint.serviceName !== '');
+  return binaryAnnotation ? binaryAnnotation.endpoint.serviceName : null;
+}
+
+function findServiceNameForAnnotation(span, values) {
+  const annotation = _(span.annotations || []).find((ann) =>
+            values.indexOf(ann.value) !== -1
+            && ann.endpoint != null
+            && ann.endpoint.serviceName != null
+            && ann.endpoint.serviceName !== '');
+  return annotation ? annotation.endpoint.serviceName : null;
+}
+
 export function getServiceName(span) {
   // Most authoritative is the label of the server's endpoint
-  const annotationFromServerAddr = _(span.binaryAnnotations || [])
-      .find((ann) =>
-        ann.key === Constants.SERVER_ADDR
-        && ann.endpoint != null
-        && ann.endpoint.serviceName != null
-        && ann.endpoint.serviceName !== '');
-  const serviceNameFromServerAddr = annotationFromServerAddr ?
-      annotationFromServerAddr.endpoint.serviceName : null;
-
-  if (serviceNameFromServerAddr) {
-    return serviceNameFromServerAddr;
+  const serverAddressServiceName = findServiceNameForBinaryAnnotation(span, Constants.SERVER_ADDR);
+  if (serverAddressServiceName) {
+    return serverAddressServiceName;
   }
 
   // Next, the label of any server annotation, logged by an instrumented server
-  const annotationFromServerSideAnnotations = _(span.annotations || [])
-      .find((ann) =>
-      Constants.CORE_SERVER.indexOf(ann.value) !== -1
-      && ann.endpoint != null
-      && ann.endpoint.serviceName != null
-      && ann.endpoint.serviceName !== '');
-  const serviceNameFromServerSideAnnotation = annotationFromServerSideAnnotations ?
-      annotationFromServerSideAnnotations.endpoint.serviceName : null;
+  const serverAnnotationServiceName = findServiceNameForAnnotation(span, Constants.CORE_SERVER);
+  if (serverAnnotationServiceName) {
+    return serverAnnotationServiceName;
+  }
 
-  if (serviceNameFromServerSideAnnotation) {
-    return serviceNameFromServerSideAnnotation;
+  // Next, the label of any messaging annotation, logged by an instrumented producer or consumer
+  const messageAnnotationServiceName = findServiceNameForAnnotation(span, Constants.CORE_MESSAGE);
+  if (messageAnnotationServiceName) {
+    return messageAnnotationServiceName;
   }
 
   // Next is the label of the client's endpoint
-  const annotationFromClientAddr = _(span.binaryAnnotations || [])
-      .find((ann) =>
-      ann.key === Constants.CLIENT_ADDR
-      && ann.endpoint != null
-      && ann.endpoint.serviceName != null
-      && ann.endpoint.serviceName !== '');
-  const serviceNameFromClientAddr = annotationFromClientAddr ?
-      annotationFromClientAddr.endpoint.serviceName : null;
-
-  if (serviceNameFromClientAddr) {
-    return serviceNameFromClientAddr;
+  const clientAddressServiceName = findServiceNameForBinaryAnnotation(span, Constants.CLIENT_ADDR);
+  if (clientAddressServiceName) {
+    return clientAddressServiceName;
   }
 
   // Next is the label of any client annotation, logged by an instrumented client
-  const annotationFromClientSideAnnotations = _(span.annotations || [])
-      .find((ann) =>
-      Constants.CORE_CLIENT.indexOf(ann.value) !== -1
-      && ann.endpoint != null
-      && ann.endpoint.serviceName != null
-      && ann.endpoint.serviceName !== '');
-  const serviceNameFromClientAnnotation = annotationFromClientSideAnnotations ?
-      annotationFromClientSideAnnotations.endpoint.serviceName : null;
-
-  if (serviceNameFromClientAnnotation) {
-    return serviceNameFromClientAnnotation;
+  const clientAnnotationServiceName = findServiceNameForAnnotation(span, Constants.CORE_CLIENT);
+  if (clientAnnotationServiceName) {
+    return clientAnnotationServiceName;
   }
 
-  // Finally is the label of the local component's endpoint
-  const annotationFromLocalComponent = _(span.binaryAnnotations || [])
-      .find((ann) =>
-      ann.key === Constants.LOCAL_COMPONENT
-      && ann.endpoint != null
-      && ann.endpoint.serviceName != null
-      && ann.endpoint.serviceName !== '');
-  const serviceNameFromLocalComponent = annotationFromLocalComponent ?
-      annotationFromLocalComponent.endpoint.serviceName : null;
-
-  if (serviceNameFromLocalComponent) {
-    return serviceNameFromLocalComponent;
+  // Next is the label of the broker's endpoint
+  const brokerAddressServiceName = findServiceNameForBinaryAnnotation(span, Constants.MESSAGE_ADDR);
+  if (brokerAddressServiceName) {
+    return brokerAddressServiceName;
   }
 
-  return null;
+  // Then is the label of the local component's endpoint
+  const localServiceName = findServiceNameForBinaryAnnotation(span, Constants.LOCAL_COMPONENT);
+  if (localServiceName) {
+    return localServiceName;
+  }
+
+  // Finally, anything so that the service name isn't blank!
+  const allServiceNames = getServiceNames(span);
+  return allServiceNames.length === 0 ? null : allServiceNames[0];
 }
 
 function getSpanTimestamps(spans) {
@@ -157,13 +149,15 @@ export function traceSummary(spans = []) {
     const timestamp = spans[0].timestamp;
     const spanTimestamps = getSpanTimestamps(spans);
     const errorType = getTraceErrorType(spans);
+    const totalSpans = spans.length;
     return {
       traceId,
       timestamp,
       duration,
       spanTimestamps,
       endpoints,
-      errorType
+      errorType,
+      totalSpans
     };
   }
 }
@@ -207,7 +201,7 @@ export function getServiceDurations(groupedTimestamps) {
 }
 
 export function mkDurationStr(duration) {
-  if (duration === 0) {
+  if (duration === 0 || typeof duration === 'undefined') {
     return '';
   } else if (duration < 1000) {
     return `${duration}μ`;
@@ -218,13 +212,24 @@ export function mkDurationStr(duration) {
   }
 }
 
+function removeEmptyFromArray(array) {
+  const newArray = [];
+  for (let i = 0; i < array.length; i++) {
+    if (array[i]) {
+      newArray.push(array[i]);
+    }
+  }
+  return newArray;
+}
+
 export function traceSummariesToMustache(serviceName = null, traceSummaries, utc = false) {
   if (traceSummaries.length === 0) {
     return [];
   } else {
-    const maxDuration = Math.max(...traceSummaries.map((s) => s.duration)) / 1000;
+    const traceSummariesCleaned = removeEmptyFromArray(traceSummaries);
+    const maxDuration = Math.max(...traceSummariesCleaned.map((s) => s.duration)) / 1000;
 
-    return traceSummaries.map((t) => {
+    return traceSummariesCleaned.map((t) => {
       const duration = t.duration / 1000;
       const groupedTimestamps = getGroupedTimestamps(t);
       const serviceDurations = getServiceDurations(groupedTimestamps);
@@ -241,7 +246,6 @@ export function traceSummariesToMustache(serviceName = null, traceSummaries, utc
       const servicePercentage = parseInt(
           parseFloat(serviceTime) / parseFloat(t.duration) * 100,
         10);
-      const spanCount = _(groupedTimestamps).values().sumBy((sts) => sts.length);
       const width = parseInt(parseFloat(duration) / parseFloat(maxDuration) * 100, 10);
       const infoClass = t.errorType === 'none' ? '' : `trace-error-${t.errorType}`;
 
@@ -252,7 +256,7 @@ export function traceSummariesToMustache(serviceName = null, traceSummaries, utc
         duration,
         durationStr,
         servicePercentage,
-        spanCount,
+        totalSpans: t.totalSpans,
         serviceDurations,
         width,
         infoClass

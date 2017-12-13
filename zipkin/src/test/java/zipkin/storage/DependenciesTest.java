@@ -33,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static zipkin.Constants.CLIENT_ADDR;
 import static zipkin.Constants.CLIENT_RECV;
 import static zipkin.Constants.CLIENT_SEND;
+import static zipkin.Constants.ERROR;
 import static zipkin.Constants.LOCAL_COMPONENT;
 import static zipkin.Constants.SERVER_ADDR;
 import static zipkin.Constants.SERVER_RECV;
@@ -95,12 +96,29 @@ public abstract class DependenciesTest {
    */
   @Test
   public void getDependencies_strictTraceId() {
-    List<Span> mixedTrace = new ArrayList<>(TRACE);
-    mixedTrace.set(1, TRACE.get(1).toBuilder().traceIdHigh(2).build());
+    long traceIdHigh = Long.MAX_VALUE;
+    long traceId = Long.MIN_VALUE;
+    List<Span> mixedTrace = asList(
+      Span.builder().traceIdHigh(traceIdHigh).traceId(traceId).id(1L).name("get")
+        .addAnnotation(Annotation.create(TODAY * 1000, SERVER_RECV, WEB_ENDPOINT))
+        .addAnnotation(Annotation.create((TODAY + 350) * 1000, SERVER_SEND, WEB_ENDPOINT))
+        .build(),
+      // the server dropped traceIdHigh
+      Span.builder().traceId(traceId).parentId(1L).id(2L).name("get")
+        .addAnnotation(Annotation.create((TODAY + 100) * 1000, SERVER_RECV, APP_ENDPOINT))
+        .addAnnotation(Annotation.create((TODAY + 250) * 1000, SERVER_SEND, APP_ENDPOINT))
+        .build(),
+      Span.builder().traceIdHigh(traceIdHigh).traceId(traceId).parentId(1L).id(2L).name("get")
+        .addAnnotation(Annotation.create((TODAY + 50) * 1000, CLIENT_SEND, WEB_ENDPOINT))
+        .addAnnotation(Annotation.create((TODAY + 300) * 1000, CLIENT_RECV, WEB_ENDPOINT))
+        .build()
+    );
+
     processDependencies(mixedTrace);
 
-    assertThat(store().getDependencies(TODAY + 1000L, null))
-        .containsOnlyElementsOf(LINKS);
+    assertThat(store().getDependencies(TODAY + 1000L, null)).containsOnly(
+      DependencyLink.create("web", "app", 1)
+    );
   }
 
   /** It should be safe to run dependency link jobs twice */
@@ -150,25 +168,22 @@ public abstract class DependenciesTest {
 
     List<Span> trace = asList(
         Span.builder().traceId(10L).id(10L).name("get")
-            .timestamp(1445136539256150L).duration(1152579L)
-            .addAnnotation(Annotation.create(1445136539256150L, SERVER_RECV, one))
-            .addAnnotation(Annotation.create(1445136540408729L, SERVER_SEND, one))
+            .addAnnotation(Annotation.create(TODAY * 1000, SERVER_RECV, one))
+            .addAnnotation(Annotation.create((TODAY + 350) * 1000, SERVER_SEND, one))
             .build(),
         Span.builder().traceId(10L).parentId(10L).id(20L).name("get")
-            .timestamp(1445136539764798L).duration(639337L)
-            .addAnnotation(Annotation.create(1445136539764798L, CLIENT_SEND, onePort3001))
-            .addAnnotation(Annotation.create(1445136539816432L, SERVER_RECV, two))
-            .addAnnotation(Annotation.create(1445136540401414L, SERVER_SEND, two))
-            .addAnnotation(Annotation.create(1445136540404135L, CLIENT_RECV, onePort3001))
+            .addAnnotation(Annotation.create((TODAY + 50) * 1000, CLIENT_SEND, onePort3001))
+            .addAnnotation(Annotation.create((TODAY + 100) * 1000, SERVER_RECV, two))
+            .addAnnotation(Annotation.create((TODAY + 250) * 1000, SERVER_SEND, two))
+            .addAnnotation(Annotation.create((TODAY + 300) * 1000, CLIENT_RECV, onePort3001))
             .build(),
-        Span.builder().traceId(10L).parentId(20L).id(30L).name("get")
-            .timestamp(1445136540025751L).duration(371298L)
-            .addAnnotation(Annotation.create(1445136540025751L, CLIENT_SEND, twoPort3002))
-            .addAnnotation(Annotation.create(1445136540072846L, SERVER_RECV, three))
-            .addAnnotation(Annotation.create(1445136540394644L, SERVER_SEND, three))
-            .addAnnotation(Annotation.create(1445136540397049L, CLIENT_RECV, twoPort3002))
+        Span.builder().traceId(10L).parentId(20L).id(30L).name("query")
+            .addAnnotation(Annotation.create((TODAY + 150) * 1000, CLIENT_SEND, twoPort3002))
+            .addAnnotation(Annotation.create((TODAY + 160) * 1000, SERVER_RECV, three))
+            .addAnnotation(Annotation.create((TODAY + 180) * 1000, SERVER_SEND, three))
+            .addAnnotation(Annotation.create((TODAY + 200) * 1000, CLIENT_RECV, twoPort3002))
             .build()
-    );
+    ).stream().map(ApplyTimestampAndDuration::apply).collect(toList());
     processDependencies(trace);
 
     long traceDuration = trace.get(0).duration;
@@ -194,20 +209,20 @@ public abstract class DependenciesTest {
 
     List<Span> trace = asList(
         Span.builder().traceId(10L).id(10L).name("get")
-            .addAnnotation(Annotation.create(1445136539256150L, SERVER_RECV, one))
-            .addAnnotation(Annotation.create(1445136540408729L, SERVER_SEND, one))
+            .addAnnotation(Annotation.create(TODAY * 1000, SERVER_RECV, one))
+            .addAnnotation(Annotation.create((TODAY + 350) * 1000, SERVER_SEND, one))
             .build(),
         Span.builder().traceId(10L).parentId(10L).id(20L).name("get")
-            .addAnnotation(Annotation.create(1445136539764798L, CLIENT_SEND, onePort3001))
-            .addAnnotation(Annotation.create(1445136539816432L, SERVER_RECV, two))
-            .addAnnotation(Annotation.create(1445136540401414L, SERVER_SEND, two))
-            .addAnnotation(Annotation.create(1445136540404135L, CLIENT_RECV, onePort3001))
+            .addAnnotation(Annotation.create((TODAY + 50) * 1000, CLIENT_SEND, onePort3001))
+            .addAnnotation(Annotation.create((TODAY + 100) * 1000, SERVER_RECV, two))
+            .addAnnotation(Annotation.create((TODAY + 250) * 1000, SERVER_SEND, two))
+            .addAnnotation(Annotation.create((TODAY + 300) * 1000, CLIENT_RECV, onePort3001))
             .build(),
-        Span.builder().traceId(10L).parentId(20L).id(30L).name("get")
-            .addAnnotation(Annotation.create(1445136540025751L, CLIENT_SEND, twoPort3002))
-            .addAnnotation(Annotation.create(1445136540072846L, SERVER_RECV, three))
-            .addAnnotation(Annotation.create(1445136540394644L, SERVER_SEND, three))
-            .addAnnotation(Annotation.create(1445136540397049L, CLIENT_RECV, twoPort3002))
+        Span.builder().traceId(10L).parentId(20L).id(30L).name("query")
+            .addAnnotation(Annotation.create((TODAY + 150) * 1000, CLIENT_SEND, twoPort3002))
+            .addAnnotation(Annotation.create((TODAY + 160) * 1000, SERVER_RECV, three))
+            .addAnnotation(Annotation.create((TODAY + 180) * 1000, SERVER_SEND, three))
+            .addAnnotation(Annotation.create((TODAY + 200) * 1000, CLIENT_RECV, twoPort3002))
             .build()
     );
     processDependencies(trace);
@@ -462,8 +477,8 @@ public abstract class DependenciesTest {
 
     // A user looks at all links since data started
     assertThat(store().getDependencies(DEPENDENCIES.endTs, null)).containsOnly(
-        DependencyLink.create("web", "app", 2),
-        DependencyLink.create("app", "db", 2)
+      DependencyLink.builder().parent("web").child("app").callCount(2L).build(),
+      DependencyLink.builder().parent("app").child("db").callCount(2L).errorCount(2L).build()
     );
   }
 
@@ -640,6 +655,24 @@ public abstract class DependenciesTest {
     );
   }
 
+  /** A timeline annotation named error is not a failed span. A tag/binary annotation is. */
+  @Test
+  public void annotationNamedErrorIsntError() {
+    List<Span> trace = asList(
+      Span.builder().traceId(10L).id(10L).name("")
+        .addAnnotation(Annotation.create((TODAY + 50) * 1000, CLIENT_SEND, WEB_ENDPOINT))
+        .addAnnotation(Annotation.create((TODAY + 72) * 1000, ERROR, APP_ENDPOINT))
+        .addAnnotation(Annotation.create((TODAY + 100) * 1000, SERVER_RECV, APP_ENDPOINT))
+        .build()
+    );
+
+    processDependencies(trace);
+
+    assertThat(store().getDependencies(TODAY + 1000L, null)).containsOnly(
+      DependencyLink.create("web", "app", 1)
+    );
+  }
+
   /** Async span starts from an uninstrumented source. */
   @Test
   public void oneway_noClient() {
@@ -659,6 +692,26 @@ public abstract class DependenciesTest {
 
     assertThat(store().getDependencies(TODAY + 1000L, null)).containsOnly(
         DependencyLink.create("kafka", "app", 1)
+    );
+  }
+
+  @Test
+  public void singleHostRPC() {
+    List<Span> trace = asList(
+      Span.builder().traceId(1L).parentId(1L).id(2L).name("get").timestamp((TODAY + 50) * 1000)
+        .addAnnotation(Annotation.create((TODAY + 50) * 1000, CLIENT_SEND, WEB_ENDPOINT))
+        .addAnnotation(Annotation.create((TODAY + 300) * 1000, CLIENT_RECV, WEB_ENDPOINT))
+        .build(),
+      Span.builder().traceId(1L).parentId(2L).id(3L).name("get").timestamp((TODAY + 100) * 1000)
+        .addAnnotation(Annotation.create((TODAY + 100) * 1000, SERVER_RECV, APP_ENDPOINT))
+        .addAnnotation(Annotation.create((TODAY + 250) * 1000, SERVER_SEND, APP_ENDPOINT))
+        .build()
+    );
+
+    processDependencies(trace);
+
+    assertThat(store().getDependencies(TODAY + 1000, null)).containsOnly(
+      DependencyLink.create("web", "app", 1)
     );
   }
 

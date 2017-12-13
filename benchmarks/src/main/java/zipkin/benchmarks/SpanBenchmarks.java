@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -32,7 +32,9 @@ import zipkin.Annotation;
 import zipkin.BinaryAnnotation;
 import zipkin.Constants;
 import zipkin.Endpoint;
-import zipkin.Span;
+import zipkin.TraceKeys;
+import zipkin.internal.Util;
+import zipkin2.Span;
 
 @Measurement(iterations = 5, time = 1)
 @Warmup(iterations = 10, time = 1)
@@ -46,14 +48,18 @@ public class SpanBenchmarks {
   static final Endpoint web = Endpoint.create("web", 124 << 24 | 13 << 16 | 90 << 8 | 3);
   static final Endpoint app =
       Endpoint.builder().serviceName("app").ipv4(172 << 24 | 17 << 16 | 2).port(8080).build();
-  static final Endpoint db =
-      Endpoint.builder().serviceName("db").ipv4(172 << 24 | 17 << 16 | 2).port(3306).build();
 
-  final Span.Builder sharedBuilder = Span.builder();
+  final zipkin.Span.Builder sharedBuilder;
+  final Span.Builder shared2Builder;
+
+  public SpanBenchmarks() {
+    sharedBuilder = buildClientOnlySpan(zipkin.Span.builder()).toBuilder();
+    shared2Builder = buildClientOnlySpan2().toBuilder();
+  }
 
   @Benchmark
-  public Span buildLocalSpan() {
-    return Span.builder()
+  public zipkin.Span buildLocalSpan() {
+    return zipkin.Span.builder()
         .traceId(1L)
         .id(1L)
         .name("work")
@@ -63,37 +69,89 @@ public class SpanBenchmarks {
         .build();
   }
 
+  static final String traceIdHex = "86154a4ba6e91385";
+  static final String spanIdHex = "4d1e00c0db9010db";
+  static final long traceId = Util.lowerHexToUnsignedLong(traceIdHex);
+  static final long spanId = Util.lowerHexToUnsignedLong(spanIdHex);
+  static final Endpoint frontend = Endpoint.create("frontend", 127 << 24 | 1);
+  static final Endpoint backend = Endpoint.builder()
+    .serviceName("backend")
+    .ipv4(192 << 24 | 168 << 16 | 99 << 8 | 101)
+    .port(9000)
+    .build();
+  static final zipkin2.Endpoint frontend2 = zipkin2.Endpoint.newBuilder()
+    .serviceName("frontend")
+    .ip("127.0.0.1")
+    .build();
+  static final zipkin2.Endpoint backend2 = zipkin2.Endpoint.newBuilder()
+    .serviceName("backend")
+    .ip("192.168.99.101")
+    .port(9000)
+    .build();
   @Benchmark
-  public Span buildClientOnlySpan() {
-    return Span.builder()
-        .traceId(1L)
-        .id(1L)
-        .name("")
-        .timestamp(1444438900948000L)
-        .duration(31000L)
-        .addAnnotation(Annotation.create(1444438900948000L, Constants.CLIENT_SEND, app))
-        .addAnnotation(Annotation.create(1444438900979000L, Constants.CLIENT_RECV, app))
-        .addBinaryAnnotation(BinaryAnnotation.address(Constants.SERVER_ADDR, db))
-        .build();
+  public zipkin.Span buildClientOnlySpan() {
+    return buildClientOnlySpan(zipkin.Span.builder());
+  }
+
+  static zipkin.Span buildClientOnlySpan(zipkin.Span.Builder builder) {
+    return builder
+      .traceId(traceId)
+      .parentId(traceId)
+      .id(spanId)
+      .name("get")
+      .timestamp(1472470996199000L)
+      .duration(207000L)
+      .addAnnotation(Annotation.create(1472470996199000L, Constants.CLIENT_SEND, frontend))
+      .addAnnotation(Annotation.create(1472470996238000L, Constants.WIRE_SEND, frontend))
+      .addAnnotation(Annotation.create(1472470996403000L, Constants.WIRE_RECV, frontend))
+      .addAnnotation(Annotation.create(1472470996406000L, Constants.CLIENT_RECV, frontend))
+      .addBinaryAnnotation(BinaryAnnotation.create(TraceKeys.HTTP_PATH, "/api", frontend))
+      .addBinaryAnnotation(BinaryAnnotation.create("clnt/finagle.version", "6.45.0", frontend))
+      .addBinaryAnnotation(BinaryAnnotation.address(Constants.SERVER_ADDR, backend))
+      .build();
   }
 
   @Benchmark
-  public Span buildClientOnlySpan_clear() {
-    return sharedBuilder.clear()
-        .traceId(1L)
-        .id(1L)
-        .name("")
-        .timestamp(1444438900948000L)
-        .duration(31000L)
-        .addAnnotation(Annotation.create(1444438900948000L, Constants.CLIENT_SEND, app))
-        .addAnnotation(Annotation.create(1444438900979000L, Constants.CLIENT_RECV, app))
-        .addBinaryAnnotation(BinaryAnnotation.address(Constants.SERVER_ADDR, db))
-        .build();
+  public zipkin.Span buildClientOnlySpan_clear() {
+    return buildClientOnlySpan(sharedBuilder.clear());
   }
 
   @Benchmark
-  public Span buildRpcSpan() {
-    return Span.builder() // web calls app
+  public Span buildClientOnlySpan2() {
+    return buildClientOnlySpan2(Span.newBuilder());
+  }
+
+  static Span buildClientOnlySpan2(Span.Builder builder) {
+    return builder
+      .traceId(traceIdHex)
+      .parentId(traceIdHex)
+      .id(spanIdHex)
+      .name("get")
+      .kind(Span.Kind.CLIENT)
+      .localEndpoint(frontend2)
+      .remoteEndpoint(backend2)
+      .timestamp(1472470996199000L)
+      .duration(207000L)
+      .addAnnotation(1472470996238000L, Constants.WIRE_SEND)
+      .addAnnotation(1472470996403000L, Constants.WIRE_RECV)
+      .putTag(TraceKeys.HTTP_PATH, "/api")
+      .putTag("clnt/finagle.version", "6.45.0")
+      .build();
+  }
+
+  @Benchmark
+  public Span buildClientOnlySpan2_clear() {
+    return buildClientOnlySpan2(shared2Builder.clear());
+  }
+
+  @Benchmark
+  public Span buildClientOnlySpan2_clone() {
+    return shared2Builder.clone().build();
+  }
+
+  @Benchmark
+  public zipkin.Span buildRpcSpan() {
+    return zipkin.Span.builder() // web calls app
         .traceId(1L)
         .id(2L)
         .parentId(1L)

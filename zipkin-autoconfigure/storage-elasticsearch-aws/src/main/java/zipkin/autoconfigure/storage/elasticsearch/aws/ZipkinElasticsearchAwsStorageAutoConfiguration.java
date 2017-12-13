@@ -38,8 +38,8 @@ import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 import zipkin.autoconfigure.storage.elasticsearch.http.ZipkinElasticsearchHttpStorageProperties;
+import zipkin.internal.V2StorageComponent;
 import zipkin.storage.StorageComponent;
-import zipkin.storage.elasticsearch.http.ElasticsearchHttpStorage;
 
 import static java.lang.String.format;
 import static zipkin.internal.Util.checkArgument;
@@ -125,7 +125,8 @@ public class ZipkinElasticsearchAwsStorageAutoConfiguration {
     ElasticsearchDomainEndpoint hosts = new ElasticsearchDomainEndpoint(
         client, HttpUrl.parse("https://es." + region + ".amazonaws.com"), domain);
 
-    return es.toBuilder(client).strictTraceId(strictTraceId).hostsSupplier(hosts).build();
+    return V2StorageComponent.create(
+      es.toBuilder(client).strictTraceId(strictTraceId).hostsSupplier(hosts).build());
   }
 
   static final class AwsDomainSetCondition extends SpringBootCondition {

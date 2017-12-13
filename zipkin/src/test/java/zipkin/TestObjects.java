@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -13,6 +13,8 @@
  */
 package zipkin;
 
+import java.net.Inet6Address;
+import java.net.UnknownHostException;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
@@ -28,7 +30,6 @@ import static zipkin.Constants.ERROR;
 import static zipkin.Constants.SERVER_ADDR;
 import static zipkin.Constants.SERVER_RECV;
 import static zipkin.Constants.SERVER_SEND;
-import static zipkin.internal.Util.UTF_8;
 import static zipkin.internal.Util.midnightUTC;
 
 public final class TestObjects {
@@ -42,9 +43,8 @@ public final class TestObjects {
   public static final Endpoint WEB_ENDPOINT = Endpoint.builder()
       .serviceName("web")
       .ipv4(124 << 24 | 13 << 16 | 90 << 8 | 3)
-      // Cheat so we don't have to catch an exception here
-      .ipv6(sun.net.util.IPAddressUtil.textToNumericFormatV6("2001:db8::c001"))
-      .port((short) 80).build();
+      .ipv6(fromIPv6Literal("2001:db8::c001"))
+      .port(80).build();
   public static final Endpoint APP_ENDPOINT =
       Endpoint.builder().serviceName("app").ipv4(172 << 24 | 17 << 16 | 2).port(8080).build();
   public static final Endpoint DB_ENDPOINT =
@@ -72,15 +72,14 @@ public final class TestObjects {
           .addAnnotation(Annotation.create((TODAY + 150) * 1000, CLIENT_SEND, APP_ENDPOINT))
           .addAnnotation(Annotation.create((TODAY + 200) * 1000, CLIENT_RECV, APP_ENDPOINT))
           .addAnnotation(Annotation.create((TODAY + 190) * 1000, "⻩", NO_IP_ENDPOINT))
-          .addBinaryAnnotation(BinaryAnnotation.address(CLIENT_ADDR, APP_ENDPOINT))
           .addBinaryAnnotation(BinaryAnnotation.address(SERVER_ADDR, DB_ENDPOINT))
           .addBinaryAnnotation(BinaryAnnotation.create(ERROR, "\uD83D\uDCA9", NO_IP_ENDPOINT))
           .build()
   ).stream().map(ApplyTimestampAndDuration::apply).collect(toList());
 
   public static final List<DependencyLink> LINKS = asList(
-      DependencyLink.builder().parent("web").child("app").callCount(1).build(),
-      DependencyLink.builder().parent("app").child("db").callCount(1).build()
+    DependencyLink.builder().parent("web").child("app").callCount(1L).build(),
+    DependencyLink.builder().parent("app").child("db").callCount(1L).errorCount(1L).build()
   );
   public static final Dependencies DEPENDENCIES = Dependencies.create(TODAY, TODAY + 1000, LINKS);
 
@@ -104,5 +103,13 @@ public final class TestObjects {
 
   public static Span span(long traceId) {
     return spanBuilder.traceId(traceId).id(traceId).build();
+  }
+
+  static byte[] fromIPv6Literal(String literal) {
+    try {
+      return Inet6Address.getByName(literal).getAddress();
+    } catch (UnknownHostException e) {
+      throw new AssertionError(e);
+    }
   }
 }

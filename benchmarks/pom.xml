@@ -20,7 +20,7 @@
   <parent>
     <groupId>io.zipkin.java</groupId>
     <artifactId>parent</artifactId>
-    <version>1.21.1-SNAPSHOT</version>
+    <version>2.4.2-SNAPSHOT</version>
   </parent>
 
   <artifactId>benchmarks</artifactId>
@@ -31,8 +31,8 @@
     <main.basedir>${project.basedir}/..</main.basedir>
     <main.java.version>1.8</main.java.version>
     <main.signature.artifact>java18</main.signature.artifact>
-    <jmh.version>1.17.3</jmh.version>
-    <libthrift.version>0.9.3</libthrift.version>
+    <jmh.version>1.19</jmh.version>
+    <libthrift.version>0.10.0</libthrift.version>
   </properties>
 
   <dependencies>
@@ -42,19 +42,21 @@
     </dependency>
 
     <dependency>
-      <groupId>${project.groupId}</groupId>
-      <artifactId>zipkin-storage-elasticsearch</artifactId>
-    </dependency>
-
-    <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
+      <version>${guava.version}</version>
     </dependency>
 
     <dependency>
       <groupId>org.apache.thrift</groupId>
       <artifactId>libthrift</artifactId>
       <version>${libthrift.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <dependency>
@@ -77,6 +79,25 @@
 
   <build>
     <plugins>
+      <plugin>
+        <inherited>true</inherited>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-compile</id>
+            <phase>compile</phase>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+            <configuration>
+              <!-- Disable errorprone because JMH generated classes don't add a generated annotation -->
+              <compilerArgs>
+                <arg>-XepDisableAllChecks</arg>
+              </compilerArgs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <!-- disable retrolambda as we allow language level 1.8 benchmark classes -->
       <plugin>
         <groupId>net.orfjackal.retrolambda</groupId>

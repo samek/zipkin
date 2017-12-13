@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -59,7 +59,7 @@ public interface Component extends Closeable {
     /** Present when not ok */
     @Nullable public final Exception exception;
 
-    CheckResult(boolean ok, Exception exception) {
+    CheckResult(boolean ok, @Nullable Exception exception) {
       this.ok = ok;
       this.exception = exception;
     }

@@ -13,8 +13,9 @@
  */
 package zipkin.server;
 
+import com.github.kristofa.brave.Brave;
+import io.prometheus.client.Histogram;
 import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.boot.actuate.health.HealthAggregator;
@@ -22,113 +23,220 @@ import org.springframework.boot.actuate.health.OrderedHealthAggregator;
 import org.springframework.boot.actuate.metrics.Metric;
 import org.springframework.boot.actuate.metrics.buffer.CounterBuffers;
 import org.springframework.boot.actuate.metrics.buffer.GaugeBuffers;
-import org.springframework.boot.autoconfigure.PropertyPlaceholderAutoConfiguration;
+import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
+import org.springframework.boot.context.embedded.undertow.UndertowDeploymentInfoCustomizer;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import zipkin.autoconfigure.prometheus.ZipkinPrometheusMetricsAutoConfiguration;
+import zipkin.autoconfigure.ui.ZipkinUiAutoConfiguration;
+import zipkin.server.brave.BraveConfiguration;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.notNullValue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.failBecauseExceptionWasNotThrown;
+import static org.springframework.boot.test.util.EnvironmentTestUtils.addEnvironment;
 
-public class ZipkinServerConfigurationTest
-{
-  AnnotationConfigApplicationContext context;
+public class ZipkinServerConfigurationTest {
+  AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
 
-  @Before
-  public void init()
-  {
-    context = new AnnotationConfigApplicationContext();
+  @After public void close() {
+    context.close();
   }
 
-  @After
-  public void close()
-  {
-    if (context != null)
-    {
-      context.close();
+  @Test public void httpCollector_enabledByDefault() {
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class,
+      ZipkinHttpCollector.class
+    );
+    context.refresh();
+
+    assertThat(context.getBean(ZipkinHttpCollector.class)).isNotNull();
+  }
+
+  @Test(expected = NoSuchBeanDefinitionException.class)
+  public void httpCollector_canDisable() {
+    addEnvironment(context, "zipkin.collector.http.enabled:false");
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class,
+      ZipkinHttpCollector.class
+    );
+    context.refresh();
+
+    context.getBean(ZipkinHttpCollector.class);
+  }
+
+  @Test public void query_enabledByDefault() {
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class,
+      ZipkinQueryApiV1.class,
+      ZipkinQueryApiV2.class
+    );
+    context.refresh();
+
+    assertThat(context.getBean(ZipkinQueryApiV1.class)).isNotNull();
+    assertThat(context.getBean(ZipkinQueryApiV2.class)).isNotNull();
+  }
+
+  @Test public void query_canDisable() {
+    addEnvironment(context, "zipkin.query.enabled:false");
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class,
+      ZipkinQueryApiV1.class,
+      ZipkinQueryApiV2.class
+    );
+    context.refresh();
+
+    try {
+      context.getBean(ZipkinQueryApiV1.class);
+      failBecauseExceptionWasNotThrown(NoSuchBeanDefinitionException.class);
+    } catch (NoSuchBeanDefinitionException e) {
+    }
+
+    try {
+      context.getBean(ZipkinQueryApiV2.class);
+      failBecauseExceptionWasNotThrown(NoSuchBeanDefinitionException.class);
+    } catch (NoSuchBeanDefinitionException e) {
     }
   }
 
-  @Test
-  public void ActuateCollectorMetrics_buffersAreNotPresent()
-  {
-    context.register(PropertyPlaceholderAutoConfiguration.class, ZipkinServerConfigurationTest.Config.class, ZipkinServerConfiguration.class);
+  @Test public void providesHttpRequestDurationHistogram() {
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class,
+      ZipkinPrometheusMetricsAutoConfiguration.class
+    );
     context.refresh();
 
-    assertBeanNotPresent(CounterBuffers.class);
-    assertBeanNotPresent(GaugeBuffers.class);
+    context.getBean(Histogram.class);
+  }
+
+  @Test public void providesHttpRequestDurationCustomizer() {
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class,
+      ZipkinPrometheusMetricsAutoConfiguration.class
+    );
+    context.refresh();
+
+    context.getBean(UndertowDeploymentInfoCustomizer.class);
+  }
+
+  @Test public void ui_enabledByDefault() {
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class,
+      ZipkinUiAutoConfiguration.class
+    );
+    context.refresh();
+
+    assertThat(context.getBean(ZipkinUiAutoConfiguration.class)).isNotNull();
+  }
+
+  @Test(expected = NoSuchBeanDefinitionException.class)
+  public void ui_canDisable() {
+    addEnvironment(context, "zipkin.ui.enabled:false");
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class,
+      ZipkinUiAutoConfiguration.class
+    );
+    context.refresh();
+
+    context.getBean(ZipkinUiAutoConfiguration.class);
+  }
+
+  @Test public void ActuateCollectorMetrics_buffersAreNotPresent() {
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class
+    );
+    context.refresh();
+
+    try {
+      context.getBean(CounterBuffers.class);
+      failBecauseExceptionWasNotThrown(NoSuchBeanDefinitionException.class);
+    } catch (NoSuchBeanDefinitionException e) {
+    }
+
+    try {
+      context.getBean(GaugeBuffers.class);
+      failBecauseExceptionWasNotThrown(NoSuchBeanDefinitionException.class);
+    } catch (NoSuchBeanDefinitionException e) {
+    }
 
     assertMetrics();
   }
 
-  @Test
-  public void ActuateCollectorMetrics_buffersArePresent()
-  {
-    context.register(PropertyPlaceholderAutoConfiguration.class, ZipkinServerConfigurationTest.ConfigWithBuffers.class, ZipkinServerConfiguration.class);
+  @Test public void selfTracing_canEnable() {
+    addEnvironment(context, "zipkin.self-tracing.enabled:true");
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.Config.class,
+      ZipkinServerConfiguration.class,
+      BraveConfiguration.class
+    );
     context.refresh();
 
-    assertThat(context.getBean(CounterBuffers.class), notNullValue());
-    assertThat(context.getBean(GaugeBuffers.class), notNullValue());
+    assertThat(context.getBean(Brave.class)).isNotNull();
+  }
+
+  @Test public void ActuateCollectorMetrics_buffersArePresent() {
+    context.register(
+      PropertyPlaceholderAutoConfiguration.class,
+      ZipkinServerConfigurationTest.ConfigWithBuffers.class,
+      ZipkinServerConfiguration.class
+    );
+    context.refresh();
+
+    assertThat(context.getBean(CounterBuffers.class)).isNotNull();
+    assertThat(context.getBean(GaugeBuffers.class)).isNotNull();
 
     assertMetrics();
   }
 
-  private void assertMetrics()
-  {
+  private void assertMetrics() {
     ActuateCollectorMetrics metrics = context.getBean(ActuateCollectorMetrics.class);
     metrics.incrementBytes(20);
-    assertThat(findMetric(metrics, "gauge.zipkin_collector.message_bytes").getValue(), equalTo(20.0d));
+    assertThat(findMetric(metrics, "gauge.zipkin_collector.message_bytes").getValue())
+      .isEqualTo(20.0d);
   }
 
-  private Metric<?> findMetric(ActuateCollectorMetrics metrics, String metricName)
-  {
+  private Metric<?> findMetric(ActuateCollectorMetrics metrics, String metricName) {
     return metrics.metrics().stream().filter(m -> m.getName().equals(metricName)).findAny().get();
   }
 
-  private void assertBeanNotPresent(Class<?> beanClass)
-  {
-    try
-    {
-      context.getBean(beanClass);
-      fail("Unexpected bean for :" + beanClass);
-    }
-    catch (NoSuchBeanDefinitionException ex)
-    {
-      // expected
-    }
-  }
-
-  private void assertBeanPresent(Class<?> beanClass)
-  {
-    assertThat(context.getBean(beanClass), notNullValue());
-  }
-
   @Configuration
-  public static class Config
-  {
+  public static class Config {
     @Bean
-    public HealthAggregator healthAggregator()
-    {
+    public HealthAggregator healthAggregator() {
       return new OrderedHealthAggregator();
     }
   }
 
   @Configuration
   @Import(Config.class)
-  public static class ConfigWithBuffers
-  {
+  public static class ConfigWithBuffers {
     @Bean
-    public CounterBuffers counterBuffers()
-    {
+    public CounterBuffers counterBuffers() {
       return new CounterBuffers();
     }
 
     @Bean
-    public GaugeBuffers gaugeBuffers()
-    {
+    public GaugeBuffers gaugeBuffers() {
       return new GaugeBuffers();
     }
   }

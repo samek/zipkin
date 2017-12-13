@@ -1,16 +1,39 @@
-# storage-elasticsearch
+# storage-elasticsearch-http
 
-This Elasticsearch 2 storage component includes a `GuavaSpanStore` and `GuavaSpanConsumer`.
-Until [zipkin-dependencies](https://github.com/openzipkin/zipkin-dependencies) is run, `ElasticsearchSpanStore.getDependencies()` will return empty.
+This is is a plugin to the Elasticsearch storage component, which uses
+HTTP by way of [OkHttp 3](https://github.com/square/okttp) and
+[Moshi](https://github.com/square/moshi). This currently supports 2.x,
+5.x and 6.x version families.
 
-The implementation uses Elasticsearch Java API's [transport client](https://www.elastic.co/guide/en/elasticsearch/guide/master/_talking_to_elasticsearch.html#_java_api) for optimal performance.
+## Multiple hosts
+Most users will supply a DNS name that's mapped to multiple A or AAAA
+records. For example, `http://elasticsearch:9200` will use normal host
+lookups to get the list of IP addresses.
 
-`zipkin.storage.elasticsearch.ElasticsearchStorage.Builder` includes defaults
-that will operate against a local Elasticsearch installation.
+You can alternatively supply a list of http base urls. This list is used
+to recover from failures. Note that all ports must be the same, and the
+scheme must be http, not https.
+
+Here are some examples:
+
+* http://1.1.1.1:9200,http://2.2.2.2:9200
+* http://1.1.1.1:9200,http://[2001:db8::c001]:9200
+* http://elasticsearch:9200,http://1.2.3.4:9200
+* http://elasticsearch-1:9200,http://elasticsearch-2:9200
+
+## Format
+Spans are stored in version 2 format, which is the same as the [v2 POST endpoint](http://zipkin.io/zipkin-api/#/default/post_spans)
+with one difference described below. We add a "timestamp_millis" field
+to aid in integration with other tools.
+
+### Timestamps
+Zipkin's timestamps are in epoch microseconds, which is not a supported date type in Elasticsearch.
+In consideration of tools like like Kibana, this component adds "timestamp_millis" when writing
+spans. This is mapped to the Elasticsearch date type, so can be used to any date-based queries.
 
 ## Indexes
 Spans are stored into daily indices, for example spans with a timestamp
-falling on 2016/03/19 will be stored in the index named 'zipkin-2016-03-19'.
+falling on 2016/03/19 will be stored in the index named 'zipkin:span-2016-03-19'.
 There is no support for TTL through this SpanStore. It is recommended
 instead to use [Elastic Curator](https://www.elastic.co/guide/en/elasticsearch/client/curator/current/about.html)
 to remove indices older than the point you are interested in.
@@ -23,19 +46,30 @@ the date separator from '-' to something else.
 control the daily index format.
 
 For example, spans with a timestamp falling on 2016/03/19 end up in the
-index 'zipkin-2016-03-19'. When the date separator is '.', the index
-would be 'zipkin-2016.03.19'.
+index 'zipkin:span-2016-03-19'. When the date separator is '.', the index
+would be 'zipkin:span-2016.03.19'.
 
 ### String Mapping
 The Zipkin api implies aggregation and exact match (keyword) on string
-fields named `traceId` and `name`, as well nested fields named
-`serviceName`, `key` and `value`. Indexing on these fields is limited to
-256 characters eventhough storage is currently unbounded.
+fields named `traceId` and `name` and `serviceName`. Indexing on these
+fields is limited to 256 characters eventhough storage is currently
+unbounded.
 
-### Timestamps
-Zipkin's timestamps are in epoch microseconds, which is not a supported date type in Elasticsearch.
-In consideration of tools like like Kibana, this component adds "timestamp_millis" when writing
-spans. This is mapped to the Elasticsearch date type, so can be used to any date-based queries.
+### Query indexing
+To support the zipkin query api, a special index field named `_q` is
+added to documents, containing annotation values and tag entry pairs.
+Ex: the tag `"error": "500"` results in `"_q":["error", "error=500"]`.
+The values in `q` are limited to 256 characters and searched as keywords.
+
+You can check these manually like so:
+```bash
+$ curl -s localhost:9200/zipkin:span-2017-08-11/_search?q=_q:error=500
+```
+
+The reason for special casing is around dotted name constraints. Tags
+are stored as a dictionary. Some keys include inconsistent number of dots
+(ex "error" and "error.message"). Elasticsearch cannot index these as it
+inteprets them as fields, and dots in fields imply an object path.
 
 ### Trace Identifiers
 Unless `ElasticsearchStorage.Builder.strictTraceId` is set to false,
@@ -69,7 +103,7 @@ your indexes:
 
 ```bash
 # the output below shows which tokens will match on the trace id supplied.
-$ curl -s localhost:9200/test_zipkin_http-2016-10-26/_analyze -d '{
+$ curl -s localhost:9200/zipkin:span-2017-08-22/_analyze -d '{
       "text": "48485a3953bb61246b221d5bc9e6496c",
       "analyzer": "traceId_analyzer"
   }'|jq '.tokens|.[]|.token'
@@ -77,27 +111,26 @@ $ curl -s localhost:9200/test_zipkin_http-2016-10-26/_analyze -d '{
   "6b221d5bc9e6496c"
 ```
 
-### Span and service Names
-Zipkin defines span and service names as lowercase. At write time, any
-mixed case span or service names are downcased. If writing a custom
-collector in a different language, make sure you write span and service
-names in lowercase. Also, if there are any custom query tools, ensure
-inputs are downcased.
+## Customizing the ingest pipeline
 
-## Testing this component
-This module conditionally runs integration tests against a local Elasticsearch instance.
+When using Elasticsearch 5.x, you can setup an [ingest pipeline](https://www.elastic.co/guide/en/elasticsearch/reference/master/pipeline.html)
+to perform custom processing.
 
-Tests are configured to automatically access Elasticsearch started with its defaults.
-To ensure tests execute, download an Elasticsearch 2.x distribution, extract it, and run `bin/elasticsearch`. 
+Here's an example, which you'd setup prior to configuring Zipkin to use
+it via `ElasticsearchStorage.Builder.pipeline`
 
-If you run tests via Maven or otherwise when Elasticsearch is not running,
-you'll notice tests are silently skipped.
+
 ```
-Results :
-
-Tests run: 50, Failures: 0, Errors: 0, Skipped: 48
+PUT _ingest/pipeline/zipkin
+{
+  "description" : "add collector_timestamp_millis",
+  "processors" : [
+    {
+      "set" : {
+        "field": "collector_timestamp_millis",
+        "value": "{{_ingest.timestamp}}"
+      }
+    }
+  ]
+}
 ```
-
-This behaviour is intentional: We don't want to burden developers with
-installing and running all storage options to test unrelated change.
-That said, all integration tests run on pull request via Travis.

@@ -68,6 +68,11 @@ describe('traceSummary', () => {
     summary.timestamp.should.equal(100);
     summary.duration.should.equal(400);
   });
+
+  it('should get total spans count', () => {
+    const summary = traceSummary(trace);
+    summary.totalSpans.should.equal(trace.length);
+  });
 });
 
 describe('get service name of a span', () => {
@@ -75,7 +80,7 @@ describe('get service name of a span', () => {
     const testSpan = {
       binaryAnnotations: [{
         key: Constants.SERVER_ADDR,
-        value: 'something',
+        value: '1',
         endpoint: {
           serviceName: 'user-service'
         }
@@ -84,10 +89,47 @@ describe('get service name of a span', () => {
     getServiceName(testSpan).should.equal('user-service');
   });
 
+  it('should get service name from broker addr', () => {
+    const testSpan = {
+      binaryAnnotations: [{
+        key: Constants.MESSAGE_ADDR,
+        value: '1',
+        endpoint: {
+          serviceName: 'kafka'
+        }
+      }]
+    };
+    getServiceName(testSpan).should.equal('kafka');
+  });
+
   it('should get service name from some server annotation', () => {
     const testSpan = {
       annotations: [{
         value: Constants.SERVER_RECEIVE_FRAGMENT,
+        endpoint: {
+          serviceName: 'test-service'
+        }
+      }]
+    };
+    getServiceName(testSpan).should.equal('test-service');
+  });
+
+  it('should get service name from producer annotation', () => {
+    const testSpan = {
+      annotations: [{
+        value: Constants.MESSAGE_SEND,
+        endpoint: {
+          serviceName: 'test-service'
+        }
+      }]
+    };
+    getServiceName(testSpan).should.equal('test-service');
+  });
+
+  it('should get service name from consumer annotation', () => {
+    const testSpan = {
+      annotations: [{
+        value: Constants.MESSAGE_RECEIVE,
         endpoint: {
           serviceName: 'test-service'
         }
@@ -132,6 +174,23 @@ describe('get service name of a span', () => {
       }]
     };
     getServiceName(testSpan).should.equal('localservice');
+  });
+
+  it('should get service name from any binary annotation', () => {
+    const testSpan = {
+      binaryAnnotations: [{
+        key: 'user',
+        value: 'grpc-client-example',
+        endpoint: {
+          serviceName: 'echecklist-localdev'
+        }
+      }]
+    };
+    getServiceName(testSpan).should.equal('echecklist-localdev');
+  });
+
+  it('should handle no annotations', () => {
+    expect(getServiceName({})).to.equal(null);
   });
 });
 
@@ -301,11 +360,6 @@ describe('traceSummariesToMustache', () => {
     model[0].servicePercentage.should.equal(50);
   });
 
-  it('should get span count', () => {
-    const model = traceSummariesToMustache(null, [summary]);
-    model[0].spanCount.should.equal(3);
-  });
-
   it('should format start time', () => {
     const model = traceSummariesToMustache(null, [summary], true);
     model[0].startTs.should.equal('02-26-2016T00:51:51.000+0000');
@@ -326,7 +380,7 @@ describe('traceSummariesToMustache', () => {
     model[0].timestamp.should.equal(summary.timestamp);
   });
 
-  it('should get correct spanCount', () => {
+  it('should get correct totalSpans', () => {
     const spans = [{
       traceId: 'd397ce70f5192a8b',
       name: 'get',
@@ -362,7 +416,7 @@ describe('traceSummariesToMustache', () => {
     }];
     const testSummary = traceSummary(spans);
     const model = traceSummariesToMustache(null, [testSummary])[0];
-    model.spanCount.should.equal(1);
+    model.totalSpans.should.equal(1);
   });
 
   it('should order traces by duration and tie-break using trace id', () => {
@@ -395,15 +449,15 @@ describe('traceSummariesToMustache', () => {
     model[1].traceId.should.equal(traceId1);
     model[2].traceId.should.equal(traceId3);
   });
-
-  it('should tie-break a sort on duration using trace id', () => {
-
-  });
 });
 
 describe('mkDurationStr', () => {
   it('should return empty string on zero duration', () => {
     mkDurationStr(0).should.equal('');
+  });
+
+  it('should return empty string on undefined duration', () => {
+    mkDurationStr().should.equal('');
   });
 
   it('should format microseconds', () => {

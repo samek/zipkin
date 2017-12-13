@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -20,6 +20,7 @@ import java.util.Date;
 import java.util.TimeZone;
 import org.junit.Test;
 
+import static java.util.concurrent.TimeUnit.DAYS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.failBecauseExceptionWasNotThrown;
 import static org.junit.Assert.assertFalse;
@@ -54,6 +55,19 @@ public class UtilTest {
   }
 
   @Test
+  public void getDays() throws ParseException {
+    assertThat(Util.getDays(DAYS.toMillis(2), DAYS.toMillis(1)))
+        .containsExactly(new Date(DAYS.toMillis(1)), new Date(DAYS.toMillis(2)));
+  }
+
+  /** Looking back earlier than 1970 is likely a bug */
+  @Test
+  public void getDays_doesntLookEarlierThan1970() throws ParseException {
+    assertThat(Util.getDays(DAYS.toMillis(2), DAYS.toMillis(3)))
+        .containsExactly(new Date(0), new Date(DAYS.toMillis(1)), new Date(DAYS.toMillis(2)));
+  }
+
+  @Test
   public void lowerHexToUnsignedLong_downgrades128bitIdsByDroppingHighBits() {
     assertThat(lowerHexToUnsignedLong("463ac35c9f6413ad48485a3953bb6124"))
         .isEqualTo(lowerHexToUnsignedLong("48485a3953bb6124"));
@@ -84,6 +98,15 @@ public class UtilTest {
       failBecauseExceptionWasNotThrown(NumberFormatException.class);
     } catch (NumberFormatException e) {
 
+    }
+
+    try {
+      lowerHexToUnsignedLong("48485A3953BB6124"); // uppercase
+      failBecauseExceptionWasNotThrown(NumberFormatException.class);
+    } catch (NumberFormatException e) {
+      assertThat(e).hasMessage(
+        "48485A3953BB6124 should be a 1 to 32 character lower-hex string with no prefix"
+      );
     }
   }
 

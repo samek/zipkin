@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -13,6 +13,9 @@
  */
 package zipkin.storage;
 
+import java.util.concurrent.Executor;
+
+import static zipkin.internal.Util.checkArgument;
 import static zipkin.storage.StorageAdapters.blockingToAsync;
 
 /**
@@ -26,10 +29,18 @@ public final class InMemoryStorage implements StorageComponent {
 
   public static final class Builder implements StorageComponent.Builder {
     boolean strictTraceId = true;
+    int maxSpanCount = 500000;
 
     /** {@inheritDoc} */
     @Override public Builder strictTraceId(boolean strictTraceId) {
       this.strictTraceId = strictTraceId;
+      return this;
+    }
+
+    /** Eldest traces are removed to ensure spans in memory don't exceed this value */
+    public Builder maxSpanCount(int maxSpanCount) {
+      checkArgument(maxSpanCount > 0, "maxSpanCount <= 0");
+      this.maxSpanCount = maxSpanCount;
       return this;
     }
 
@@ -50,8 +61,8 @@ public final class InMemoryStorage implements StorageComponent {
 
   InMemoryStorage(Builder builder) {
     spanStore = new InMemorySpanStore(builder);
-    asyncSpanStore = blockingToAsync(spanStore, Runnable::run);
-    asyncConsumer = blockingToAsync(spanStore.spanConsumer, Runnable::run);
+    asyncSpanStore = blockingToAsync(spanStore, DirectExecutor.INSTANCE);
+    asyncConsumer = blockingToAsync(spanStore.spanConsumer, DirectExecutor.INSTANCE);
   }
 
   @Override public InMemorySpanStore spanStore() {
@@ -84,5 +95,18 @@ public final class InMemoryStorage implements StorageComponent {
   }
 
   @Override public void close() {
+  }
+
+  /** Same as {@code MoreExecutors.directExecutor()} except without a guava 18 dep */
+  enum DirectExecutor implements Executor {
+    INSTANCE;
+
+    @Override public void execute(Runnable command) {
+      command.run();
+    }
+
+    @Override public String toString() {
+      return "DirectExecutor";
+    }
   }
 }

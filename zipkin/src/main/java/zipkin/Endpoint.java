@@ -13,9 +13,14 @@
  */
 package zipkin;
 
+import java.io.Serializable;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Locale;
+import zipkin.internal.InetAddresses;
 import zipkin.internal.JsonCodec;
 import zipkin.internal.Nullable;
 import zipkin.internal.Util;
@@ -32,7 +37,8 @@ import static zipkin.internal.Util.checkNotNull;
  * exception allows zipkin to display network context of uninstrumented services, or clients such as
  * web browsers.
  */
-public final class Endpoint {
+public final class Endpoint implements Serializable { // for Spark jobs
+  private static final long serialVersionUID = 0L;
 
   /**
    * @deprecated as leads to null pointer exceptions on port. Use {@link #builder()} instead.
@@ -95,7 +101,7 @@ public final class Endpoint {
   @Nullable
   public final Short port;
 
-  Endpoint(String serviceName, int ipv4, byte[] ipv6, Short port) {
+  Endpoint(String serviceName, int ipv4, @Nullable byte[] ipv6, @Nullable Short port) {
     this.serviceName = checkNotNull(serviceName, "serviceName").isEmpty() ? ""
         : serviceName.toLowerCase(Locale.ROOT);
     this.ipv4 = ipv4;
@@ -103,11 +109,11 @@ public final class Endpoint {
     this.port = port;
   }
 
-  public Builder toBuilder(){
+  public Builder toBuilder() {
     return new Builder(this);
   }
 
-  public static Builder builder(){
+  public static Builder builder() {
     return new Builder();
   }
 
@@ -133,6 +139,59 @@ public final class Endpoint {
       return this;
     }
 
+    /**
+     * Returns true if {@link #ipv4(int)} or {@link #ipv6(byte[])} could be parsed from the input.
+     *
+     * <p>Returns boolean not this for conditional parsing. For example:
+     * <pre>{@code
+     * if (!builder.parseIp(input.getHeader("X-Forwarded-For"))) {
+     *   builder.parseIp(input.getRemoteAddr());
+     * }
+     * }</pre>
+     *
+     * @see #parseIp(String)
+     * @since 1.24
+     */
+    public boolean parseIp(@Nullable InetAddress addr) {
+      if (addr == null) return false;
+      byte[] addressBytes = addr.getAddress();
+      if (addressBytes.length == 4) {
+        ipv4(ByteBuffer.wrap(addressBytes).getInt());
+      } else if (addressBytes.length == 16) {
+        ipv6(addressBytes);
+      } else {
+        return false;
+      }
+      return true;
+    }
+
+    /**
+     * Returns true if {@link #ipv4(int)} or {@link #ipv6(byte[])} could be parsed from the input.
+     *
+     * <p>Returns boolean not this for conditional parsing. For example:
+     * <pre>{@code
+     * if (!builder.parseIp(input.getHeader("X-Forwarded-For"))) {
+     *   builder.parseIp(input.getRemoteAddr());
+     * }
+     * }</pre>
+     *
+     * @see #parseIp(InetAddress)
+     * @since 1.24
+     */
+    public boolean parseIp(@Nullable String ipString) {
+      if (ipString == null) return false;
+      byte[] addressBytes = InetAddresses.ipStringToBytes(ipString);
+      if (addressBytes == null) return false;
+      if (addressBytes.length == 4) {
+        ipv4(ByteBuffer.wrap(addressBytes).getInt());
+      } else if (addressBytes.length == 16) {
+        ipv6(addressBytes);
+      } else {
+        return false;
+      }
+      return true;
+    }
+
     /** @see Endpoint#ipv4 */
     public Builder ipv4(int ipv4) {
       this.ipv4 = ipv4;
@@ -147,8 +206,11 @@ public final class Endpoint {
      *
      * @see Endpoint#ipv6
      */
-    public Builder ipv6(byte[] ipv6) {
-      if (ipv6 == null) return this;
+    public Builder ipv6(@Nullable byte[] ipv6) {
+      if (ipv6 == null) {
+        this.ipv6 = null;
+        return this;
+      }
       checkArgument(ipv6.length == 16, "ipv6 addresses are 16 bytes: " + ipv6.length);
       for (int i = 0; i < 10; i++) { // Embedded IPv4 addresses start with unset 80 bits
         if (ipv6[i] != 0) {
@@ -182,13 +244,13 @@ public final class Endpoint {
      * @see Endpoint#port
      */
     public Builder port(int port) {
-      checkArgument(port >= 0 && port <= 0xffff, "invalid port %s", port);
-      this.port = port == 0 ? null : (short) (port & 0xffff);
+      checkArgument(port <= 0xffff, "invalid port %s", port);
+      this.port = port <= 0 ? null : (short) (port & 0xffff);
       return this;
     }
 
     /** @see Endpoint#port */
-    public Builder port(Short port) {
+    public Builder port(@Nullable Short port) {
       if (port == null || port != 0) {
         this.port = port;
       }
@@ -198,6 +260,28 @@ public final class Endpoint {
     public Endpoint build() {
       return new Endpoint(serviceName, ipv4 == null ? 0 : ipv4, ipv6, port);
     }
+  }
+
+  /** Converts to version 2 representation */
+  public zipkin2.Endpoint toV2() {
+    zipkin2.Endpoint.Builder result = zipkin2.Endpoint.newBuilder()
+      .serviceName(serviceName)
+      .port(port != null ? port & 0xffff : null);
+    if (ipv4 != 0) {
+      result.parseIp(new StringBuilder()
+        .append(ipv4 >> 24 & 0xff).append('.')
+        .append(ipv4 >> 16 & 0xff).append('.')
+        .append(ipv4 >> 8 & 0xff).append('.')
+        .append(ipv4 & 0xff).toString());
+    }
+    if (ipv6 != null) {
+      try {
+        result.parseIp(Inet6Address.getByAddress(ipv6));
+      } catch (UnknownHostException e) {
+        throw new AssertionError(e); // ipv6 is fixed length, so shouldn't happen.
+      }
+    }
+    return result.build();
   }
 
   @Override

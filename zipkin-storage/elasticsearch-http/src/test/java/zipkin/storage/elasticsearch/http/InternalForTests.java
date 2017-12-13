@@ -14,30 +14,30 @@
 package zipkin.storage.elasticsearch.http;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.List;
 import zipkin.Codec;
 import zipkin.DependencyLink;
-import zipkin.internal.CallbackCaptor;
-
-import static zipkin.storage.elasticsearch.http.ElasticsearchHttpSpanStore.DEPENDENCY_LINK;
+import zipkin2.elasticsearch.ElasticsearchStorage;
+import zipkin2.elasticsearch.internal.HttpBulkIndexer;
 
 /** Package accessor for integration tests */
 public class InternalForTests {
-  public static void writeDependencyLinks(ElasticsearchHttpStorage es, List<DependencyLink> links,
-      long midnightUTC) {
-    String index = es.indexNameFormatter().indexNameForTimestamp(midnightUTC);
-    HttpBulkIndexer<DependencyLink> indexer =
-        new HttpBulkIndexer<DependencyLink>(DEPENDENCY_LINK, es) {
-          @Override byte[] toJsonBytes(DependencyLink link) {
-            return Codec.JSON.writeDependencyLink(link);
-          }
-        };
+  public static void writeDependencyLinks(ElasticsearchStorage es, List<DependencyLink> links,
+    long midnightUTC) {
+    String index =
+      es.indexNameFormatter().formatTypeAndTimestamp("dependency", midnightUTC);
+    HttpBulkIndexer indexer = new HttpBulkIndexer("index-links", es);
     for (DependencyLink link : links) {
-      indexer.add(index, link, link.parent + "|" + link.child); // Unique constraint
+      byte[] document = Codec.JSON.writeDependencyLink(link);
+      indexer.add(index, "dependency", document,
+        link.parent + "|" + link.child); // Unique constraint
     }
-    CallbackCaptor<Void> callback = new CallbackCaptor<>();
-    indexer.execute(callback);
-    callback.get();
+    try {
+      indexer.newCall().execute();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
   }
 
   public static void clear(ElasticsearchHttpStorage es) throws IOException {

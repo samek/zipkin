@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -15,7 +15,8 @@ package zipkin.autoconfigure.ui;
 
 import org.junit.After;
 import org.junit.Test;
-import org.springframework.boot.autoconfigure.PropertyPlaceholderAutoConfiguration;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
+import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,7 +41,6 @@ public class ZipkinUiAutoConfigurationTest {
         .isNotNull();
   }
 
-
   @Test
   public void canOverridesProperty_defaultLookback() {
     context = createContextWithOverridenProperty("zipkin.ui.defaultLookback:100");
@@ -48,7 +48,6 @@ public class ZipkinUiAutoConfigurationTest {
     assertThat(context.getBean(ZipkinUiProperties.class).getDefaultLookback())
         .isEqualTo(100);
   }
-
 
   @Test
   public void canOverrideProperty_logsUrl() {
@@ -70,6 +69,29 @@ public class ZipkinUiAutoConfigurationTest {
     context = createContext();
 
     assertThat(context.getBean(ZipkinUiProperties.class).getLogsUrl()).isNull();
+  }
+
+  @Test(expected = NoSuchBeanDefinitionException.class)
+  public void canOverridesProperty_disable() {
+    context = createContextWithOverridenProperty("zipkin.ui.enabled:false");
+
+    context.getBean(ZipkinUiProperties.class);
+  }
+
+  @Test
+  public void canOverrideProperty_dependencyLowErrorRate() {
+    context = createContextWithOverridenProperty("zipkin.ui.dependency.low-error-rate:0.1");
+
+    assertThat(context.getBean(ZipkinUiProperties.class).getDependency().getLowErrorRate())
+      .isEqualTo(0.1f);
+  }
+
+  @Test
+  public void canOverrideProperty_dependencyHighErrorRate() {
+    context = createContextWithOverridenProperty("zipkin.ui.dependency.high-error-rate:0.1");
+
+    assertThat(context.getBean(ZipkinUiProperties.class).getDependency().getHighErrorRate())
+      .isEqualTo(0.1f);
   }
 
   private static AnnotationConfigApplicationContext createContext() {

@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2016 The OpenZipkin Authors
+ * Copyright 2015-2017 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -69,7 +69,7 @@ public final class TraceKeys {
 
   /**
    * The entire URL, including the scheme, host and query parameters if available. Ex.
-   * "https://mybucket.s3.amazonaws.com/objects/abcd-ff?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Algorithm=AWS4-HMAC-SHA256..."
+   * "https://mybucket.s3.amazonaws.com/objects/abcd-ff?X-Amz-Algorithm=AWS4-HMAC-SHA256..."
    *
    * <p>Combined with {@linkplain #HTTP_METHOD}, you can understand the fully-qualified request
    * line.
@@ -101,7 +101,8 @@ public final class TraceKeys {
 
   /**
    * The query executed for SQL call.  Ex. "select * from customers where id = ?"
-   * <p>Used to filter by SQL query.
+   *
+   * <p>Used to understand the complexity of a request
    */
   public static final String SQL_QUERY = "sql.query";
 

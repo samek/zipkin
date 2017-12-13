@@ -15,15 +15,17 @@
 
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
   <parent>
     <groupId>io.zipkin.java</groupId>
     <artifactId>zipkin-storage</artifactId>
-    <version>1.21.1-SNAPSHOT</version>
+    <version>2.4.2-SNAPSHOT</version>
   </parent>
-  <modelVersion>4.0.0</modelVersion>
 
+  <groupId>io.zipkin.zipkin2</groupId>
   <artifactId>zipkin-storage-elasticsearch</artifactId>
-  <name>Storage: Elasticsearch</name>
+  <name>Storage: Elasticsearch (V2)</name>
 
   <properties>
     <main.basedir>${project.basedir}/../..</main.basedir>
@@ -31,50 +33,37 @@
 
   <dependencies>
     <dependency>
-      <groupId>${project.groupId}</groupId>
+      <groupId>io.zipkin.zipkin2</groupId>
       <artifactId>zipkin</artifactId>
     </dependency>
 
     <dependency>
-      <groupId>org.elasticsearch</groupId>
-      <artifactId>elasticsearch</artifactId>
+      <groupId>com.squareup.okhttp3</groupId>
+      <artifactId>okhttp</artifactId>
     </dependency>
 
     <dependency>
-      <groupId>io.zipkin.java</groupId>
-      <artifactId>zipkin-guava</artifactId>
+      <groupId>com.google.auto.value</groupId>
+      <artifactId>auto-value</artifactId>
+      <scope>provided</scope>
     </dependency>
 
     <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-api</artifactId>
-      <version>${slf4j.version}</version>
+      <groupId>com.squareup.moshi</groupId>
+      <artifactId>moshi</artifactId>
     </dependency>
 
+    <!-- For HttpCallTest -->
     <dependency>
-      <groupId>ch.qos.logback</groupId>
-      <artifactId>logback-classic</artifactId>
-      <version>${logback.version}</version>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>${guava.version}</version>
       <scope>test</scope>
     </dependency>
 
     <dependency>
-      <groupId>${project.groupId}</groupId>
-      <artifactId>zipkin</artifactId>
-      <type>test-jar</type>
-      <scope>test</scope>
-    </dependency>
-
-    <dependency>
-      <groupId>org.mockito</groupId>
-      <artifactId>mockito-core</artifactId>
-      <version>${mockito.version}</version>
-      <scope>test</scope>
-    </dependency>
-
-    <dependency>
-      <groupId>org.testcontainers</groupId>
-      <artifactId>testcontainers</artifactId>
+      <groupId>com.squareup.okhttp3</groupId>
+      <artifactId>mockwebserver</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
