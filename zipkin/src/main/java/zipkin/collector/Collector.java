@@ -116,8 +116,6 @@ public class Collector
       return;
     }
 
-    kprod.add(spans);
-    accept(spans, callback);
 
     if (storage2 != null && decoder instanceof V2JsonSpanDecoder) {
       storage2.acceptSpans(serializedSpans, SpanBytesDecoder.JSON_V2, callback);
@@ -144,11 +142,12 @@ public class Collector
       callback.onError(errorReading(e));
       return;
     }
-    kprod.add(spans);
+
     accept(spans, callback);
   }
 
   @Override public void accept(List<zipkin.Span> spans, Callback<Void> callback) {
+    kprod.add(spans);
     if (storage2 != null) {
       int length = spans.size();
       List<Span> span2s = new ArrayList<>(length);
